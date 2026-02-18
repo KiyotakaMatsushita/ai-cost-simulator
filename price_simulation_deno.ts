@@ -11,9 +11,9 @@
 const pricingJsonPath = new URL("./pricing.json", import.meta.url);
 const pricingJson = await Deno.readTextFile(pricingJsonPath);
 
-const _validated = JSON.parse(pricingJson);
+const _validated = JSON.parse(pricingJson) as Record<string, { name: string }>;
 console.log(
-  `Loaded pricing for: ${Object.values(_validated).map((m: any) => m.name).join(", ")}`,
+  `Loaded pricing for: ${Object.values(_validated).map((m) => m.name).join(", ")}`,
 );
 
 const HTML = /*html*/ `<!DOCTYPE html>

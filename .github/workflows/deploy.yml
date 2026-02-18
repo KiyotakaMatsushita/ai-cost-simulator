@@ -1,0 +1,57 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Generate index.html from pricing.json
+        run: |
+          deno eval "
+          const pricing = await Deno.readTextFile('./pricing.json');
+          const ts = await Deno.readTextFile('./price_simulation_deno.ts');
+          const match = ts.match(/const HTML = \/\*html\*\/ \x60([\s\S]*?)\x60;/);
+          if (!match) { console.error('HTML template not found'); Deno.exit(1); }
+          const html = match[1].replace('__PRICING_DATA__', pricing.trim());
+          await Deno.writeTextFile('./index.html', html);
+          console.log('Generated index.html (' + html.length + ' bytes)');
+          "
+
+      - name: Validate generated HTML
+        run: |
+          test -f index.html || (echo "index.html not found" && exit 1)
+          grep -q 'pricingData' index.html || (echo "Pricing data not embedded" && exit 1)
+          echo "Validation passed"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

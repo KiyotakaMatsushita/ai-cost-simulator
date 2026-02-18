@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Type check
+        run: deno check price_simulation_deno.ts generate_excel.ts
+
+      - name: Validate pricing.json
+        run: |
+          deno eval "
+          const json = JSON.parse(await Deno.readTextFile('./pricing.json'));
+          const required = ['name','platform','input','cacheWrite5m','cacheWrite1h','cachedInput','output','storage','color'];
+          for (const [key, model] of Object.entries(json)) {
+            for (const field of required) {
+              if (!(field in (model as Record<string, unknown>))) {
+                console.error('Missing field: ' + key + '.' + field);
+                Deno.exit(1);
+              }
+            }
+          }
+          console.log('pricing.json valid: ' + Object.keys(json).length + ' models');
+          "
+
+      - name: Verify HTML generation
+        run: |
+          deno eval "
+          const pricing = await Deno.readTextFile('./pricing.json');
+          const ts = await Deno.readTextFile('./price_simulation_deno.ts');
+          const match = ts.match(/const HTML = \/\*html\*\/ \x60([\s\S]*?)\x60;/);
+          if (!match) { console.error('HTML template not found'); Deno.exit(1); }
+          const html = match[1].replace('__PRICING_DATA__', pricing.trim());
+          if (!html.includes('pricingData')) { console.error('Pricing data not embedded'); Deno.exit(1); }
+          if (html.length < 1000) { console.error('HTML too small: ' + html.length); Deno.exit(1); }
+          console.log('HTML generation OK (' + html.length + ' bytes)');
+          "
+
+      - name: Lint
+        run: deno lint price_simulation_deno.ts generate_excel.ts
