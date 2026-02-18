@@ -2,7 +2,7 @@
  * Generate Excel spreadsheet from simulator data
  * Usage: deno run --allow-write --allow-read generate_excel.ts
  */
-import * as XLSX from "npm:xlsx@0.20.3";
+import * as XLSX from "npm:xlsx@0.18.5";
 
 const wb = XLSX.utils.book_new();
 
