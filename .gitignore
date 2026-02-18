@@ -1,0 +1,7 @@
+# Generated output files
+*.xlsx
+*.zip
+*.tsv
+
+# OS files
+.DS_Store

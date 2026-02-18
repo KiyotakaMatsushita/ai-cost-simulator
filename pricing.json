@@ -1,0 +1,68 @@
+{
+  "gemini25Flash": {
+    "name": "Gemini 2.5 Flash",
+    "platform": "Vertex AI",
+    "input": 0.30,
+    "cacheWrite5m": 0.30,
+    "cacheWrite1h": 0.30,
+    "cachedInput": 0.03,
+    "output": 2.50,
+    "storage": 1.00,
+    "color": "#4285F4"
+  },
+  "gemini30Flash": {
+    "name": "Gemini 3 Flash",
+    "platform": "Vertex AI",
+    "input": 0.50,
+    "cacheWrite5m": 0.50,
+    "cacheWrite1h": 0.50,
+    "cachedInput": 0.05,
+    "output": 3.00,
+    "storage": 1.00,
+    "color": "#34A853"
+  },
+  "gemini3Pro": {
+    "name": "Gemini 3 Pro",
+    "platform": "Vertex AI",
+    "input": 2.00,
+    "cacheWrite5m": 2.00,
+    "cacheWrite1h": 2.00,
+    "cachedInput": 0.20,
+    "output": 12.00,
+    "storage": 4.50,
+    "color": "#EA4335"
+  },
+  "claude45Haiku": {
+    "name": "Claude Haiku 4.5",
+    "platform": "Anthropic",
+    "input": 1.00,
+    "cacheWrite5m": 1.25,
+    "cacheWrite1h": 2.00,
+    "cachedInput": 0.10,
+    "output": 5.00,
+    "storage": 0,
+    "color": "#D97706"
+  },
+  "claude45Sonnet": {
+    "name": "Claude Sonnet 4.5",
+    "platform": "Anthropic",
+    "input": 3.00,
+    "cacheWrite5m": 3.75,
+    "cacheWrite1h": 6.00,
+    "cachedInput": 0.30,
+    "output": 15.00,
+    "storage": 0,
+    "color": "#8B5CF6"
+  },
+  "claude45Opus": {
+    "name": "Claude Opus 4.5",
+    "platform": "Anthropic",
+    "input": 5.00,
+    "cacheWrite5m": 6.25,
+    "cacheWrite1h": 10.00,
+    "cachedInput": 0.50,
+    "output": 25.00,
+    "storage": 0,
+    "color": "#DC2626"
+  }
+}

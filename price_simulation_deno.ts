@@ -1,0 +1,537 @@
+/**
+ * AI Cost Strategy Simulator - Deno Edition
+ *
+ * Usage:
+ *   deno run --allow-net --allow-read price_simulation_deno.ts
+ *
+ * Then open http://localhost:8000 in a browser.
+ * Pricing is loaded from pricing.json in the same directory.
+ */
+
+const pricingJsonPath = new URL("./pricing.json", import.meta.url);
+const pricingJson = await Deno.readTextFile(pricingJsonPath);
+
+const _validated = JSON.parse(pricingJson);
+console.log(
+  `Loaded pricing for: ${Object.values(_validated).map((m: any) => m.name).join(", ")}`,
+);
+
+const HTML = /*html*/ `<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI Cost Strategy Simulator</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<style>
+  body { font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+  input[type=number] { -moz-appearance: textfield; }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { opacity: 1; }
+  table { border-collapse: collapse; }
+</style>
+</head>
+<body class="min-h-screen bg-white text-slate-800 antialiased">
+<div id="app" class="max-w-7xl mx-auto px-6 py-10"></div>
+
+<script>
+// \u2500\u2500 Pricing Data \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+const pricingData = __PRICING_DATA__;
+
+// \u2500\u2500 Presets \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+const presets = [
+  {
+    name: '\u5C0F\u898F\u6A21 PoC',
+    cacheTokens: 30000, cacheReadTokens: 30000, promptTokens: 5000, outputTokens: 1500,
+    userCount: 500, reqPerUser: 5, testDays: 14, hoursPerDay: 24,
+    isSharedCache: true, claudeWriteType: '1h', cacheHitRate: 80,
+  },
+  {
+    name: '\u672C\u756A\u904B\u7528',
+    cacheTokens: 50000, cacheReadTokens: 50000, promptTokens: 7000, outputTokens: 2000,
+    userCount: 2500, reqPerUser: 10, testDays: 30, hoursPerDay: 24,
+    isSharedCache: true, claudeWriteType: '1h', cacheHitRate: 90,
+  },
+  {
+    name: '\u5927\u898F\u6A21\u5C55\u958B',
+    cacheTokens: 100000, cacheReadTokens: 80000, promptTokens: 10000, outputTokens: 3000,
+    userCount: 10000, reqPerUser: 20, testDays: 30, hoursPerDay: 24,
+    isSharedCache: true, claudeWriteType: '1h', cacheHitRate: 95,
+  },
+];
+
+// \u2500\u2500 State \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+const state = {
+  activeTab: 'simulator',
+  exchangeRate: 155.00,
+  // Simulator tab
+  sim: {
+    cacheTokens: 50000, promptTokens: 7000, outputTokens: 2000, cacheReadTokens: 50000,
+    userCount: 2500, reqPerUser: 10, testDays: 7, hoursPerDay: 24,
+    claudeWriteType: '1h', isSharedCache: true, cacheHitRate: 90,
+  },
+  // Scenario tab
+  activeScenario: 0,
+  scenarios: presets.map(p => ({ ...p })),
+};
+
+// \u2500\u2500 Helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+function fJ(usd) { return (Number(usd) * state.exchangeRate).toLocaleString('ja-JP', { minimumFractionDigits: 0, maximumFractionDigits: 0 }); }
+function fJ2(usd) { return (Number(usd) * state.exchangeRate).toLocaleString('ja-JP', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function fU(v) { return Number(v).toFixed(2); }
+
+function computeResults(p) {
+  const totalReqs = p.userCount * p.reqPerUser;
+  const totalHours = p.hoursPerDay * p.testDays;
+  const hitRate = (p.cacheHitRate ?? 100) / 100;
+  const results = Object.entries(pricingData).map(([key, m]) => {
+    const ic = key.includes('claude');
+    const cM = p.cacheTokens / 1e6, rM = p.cacheReadTokens / 1e6, pM = p.promptTokens / 1e6, oM = p.outputTokens / 1e6;
+    const sc = p.isSharedCache ? 1 : p.userCount;
+    const wp = ic ? (p.claudeWriteType === '1h' ? m.cacheWrite1h : m.cacheWrite5m) : m.input;
+    // Writes/day: Gemini=1 (persistent w/ storage), Claude 1h=hourly re-write, Claude 5m=every 5min
+    const wpd = ic ? (p.claudeWriteType === '1h' ? p.hoursPerDay : p.hoursPerDay * 12) : 1;
+    const wr = cM * wp * wpd * p.testDays * sc;
+    const st = cM * m.storage * totalHours * sc;
+    // Cache miss pays full input price instead of cached price
+    const rd = rM * (m.cachedInput * hitRate + m.input * (1 - hitRate)) * totalReqs;
+    const pr = pM * m.input * totalReqs;
+    const ou = oM * m.output * totalReqs;
+    const tot = wr + st + rd + pr + ou;
+    const pReq = totalReqs > 0 ? tot / totalReqs : 0;
+    const noC = (p.cacheReadTokens + p.promptTokens) / 1e6 * m.input * totalReqs + ou;
+    return { ...m, id: key, isClaude: ic, writePrice: wp, writesPerDay: wpd, write: wr, storageCost: st, read: rd, prompt: pr, outputCost: ou, total: tot, perReq: pReq, noCache: noC, savPct: (((noC - tot) / noC) * 100).toFixed(1), savUSD: noC - tot };
+  });
+  return { results, totalReqs, totalHours };
+}
+
+function computeTimeSeries(p) {
+  const dailyReqs = (p.userCount * p.reqPerUser) / p.testDays;
+  const hitRate = (p.cacheHitRate ?? 100) / 100;
+  return Object.entries(pricingData).map(([key, m]) => {
+    const ic = key.includes('claude');
+    const cM = p.cacheTokens / 1e6, rM = p.cacheReadTokens / 1e6, pM = p.promptTokens / 1e6, oM = p.outputTokens / 1e6;
+    const sc = p.isSharedCache ? 1 : p.userCount;
+    const wp = ic ? (p.claudeWriteType === '1h' ? m.cacheWrite1h : m.cacheWrite5m) : m.input;
+    const wpd = ic ? (p.claudeWriteType === '1h' ? p.hoursPerDay : p.hoursPerDay * 12) : 1;
+    const dWrite = cM * wp * wpd * sc;
+    const dStorage = cM * m.storage * p.hoursPerDay * sc;
+    const dRead = rM * (m.cachedInput * hitRate + m.input * (1 - hitRate)) * dailyReqs;
+    const dPrompt = pM * m.input * dailyReqs;
+    const dOutput = oM * m.output * dailyReqs;
+    const daily = dWrite + dStorage + dRead + dPrompt + dOutput;
+    const pts = [];
+    for (let d = 0; d <= p.testDays; d++) pts.push({ day: d, usd: daily * d });
+    return { ...m, id: key, points: pts, daily, total: daily * p.testDays };
+  });
+}
+
+function niceNum(v) {
+  if (v <= 0) return 1;
+  const exp = Math.floor(Math.log10(v));
+  const f = v / Math.pow(10, exp);
+  let n; if (f <= 1.2) n = 1.2; else if (f <= 1.5) n = 1.5; else if (f <= 2) n = 2; else if (f <= 3) n = 3; else if (f <= 5) n = 5; else if (f <= 7.5) n = 7.5; else n = 10;
+  return n * Math.pow(10, exp);
+}
+
+function buildChart(series, maxDays, rate) {
+  const W = 900, H = 380, pad = { t: 24, r: 140, b: 44, l: 80 };
+  const pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+  const maxJPY = niceNum(Math.max(...series.map(s => s.total * rate)));
+  const x = d => pad.l + (d / maxDays) * pw;
+  const y = v => pad.t + ph - (v / maxJPY) * ph;
+
+  let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="w-full border border-slate-200 rounded-lg bg-white">';
+
+  // grid
+  const gSteps = 5;
+  for (let i = 0; i <= gSteps; i++) {
+    const val = (maxJPY / gSteps) * i;
+    svg += '<line x1="' + pad.l + '" y1="' + y(val) + '" x2="' + (W - pad.r) + '" y2="' + y(val) + '" stroke="#f1f5f9" stroke-width="1"/>';
+    const label = val >= 1e6 ? (val / 1e6).toFixed(1) + 'M' : val >= 1e3 ? (val / 1e3).toFixed(0) + 'k' : val.toFixed(0);
+    svg += '<text x="' + (pad.l - 8) + '" y="' + (y(val) + 3) + '" text-anchor="end" fill="#94a3b8" font-size="10">&yen;' + label + '</text>';
+  }
+
+  // x axis
+  const xStep = maxDays <= 7 ? 1 : maxDays <= 14 ? 2 : maxDays <= 30 ? 5 : 10;
+  for (let d = 0; d <= maxDays; d += xStep) {
+    svg += '<line x1="' + x(d) + '" y1="' + (pad.t) + '" x2="' + x(d) + '" y2="' + (H - pad.b) + '" stroke="#f8fafc" stroke-width="1"/>';
+    svg += '<text x="' + x(d) + '" y="' + (H - pad.b + 18) + '" text-anchor="middle" fill="#94a3b8" font-size="10">' + d + '\u65E5</text>';
+  }
+
+  // axes
+  svg += '<line x1="' + pad.l + '" y1="' + pad.t + '" x2="' + pad.l + '" y2="' + (H - pad.b) + '" stroke="#e2e8f0" stroke-width="1"/>';
+  svg += '<line x1="' + pad.l + '" y1="' + (H - pad.b) + '" x2="' + (W - pad.r) + '" y2="' + (H - pad.b) + '" stroke="#e2e8f0" stroke-width="1"/>';
+
+  // lines + end labels
+  series.forEach(s => {
+    const pts = s.points.map(p => x(p.day) + ',' + y(p.usd * rate)).join(' ');
+    svg += '<polyline points="' + pts + '" fill="none" stroke="' + s.color + '" stroke-width="2.5" stroke-linecap="round"/>';
+    const last = s.points[s.points.length - 1];
+    const ly = y(last.usd * rate);
+    svg += '<circle cx="' + x(last.day) + '" cy="' + ly + '" r="3" fill="' + s.color + '"/>';
+    svg += '<text x="' + (x(last.day) + 8) + '" y="' + (ly + 4) + '" fill="' + s.color + '" font-size="10" font-weight="600">' + s.name + '</text>';
+    svg += '<text x="' + (x(last.day) + 8) + '" y="' + (ly + 16) + '" fill="#94a3b8" font-size="9">&yen;' + fJ(last.usd) + '</text>';
+  });
+
+  svg += '</svg>';
+  return svg;
+}
+
+function inputCls() { return 'mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400'; }
+
+function paramGrid(prefix, p, totalHours) {
+  return '<div class="grid grid-cols-2 lg:grid-cols-4 gap-3">' +
+    [
+      ['\u30AD\u30E3\u30C3\u30B7\u30E5\u91CF C', 'cacheTokens'],
+      ['\u518D\u5229\u7528\u30D2\u30C3\u30C8 R', 'cacheReadTokens'],
+      ['\u65B0\u898F\u30D7\u30ED\u30F3\u30D7\u30C8 P', 'promptTokens'],
+      ['\u56DE\u7B54\u30C8\u30FC\u30AF\u30F3 O', 'outputTokens'],
+      ['\u5229\u7528\u8005\u6570 U', 'userCount'],
+      ['\u56DE\u6570/\u30E6\u30FC\u30B6\u30FC N', 'reqPerUser'],
+      ['\u30C6\u30B9\u30C8\u65E5\u6570 D', 'testDays'],
+      ['Gemini\u4FDD\u6301 h/\u65E5' + (totalHours ? ' (\u8A08' + totalHours + 'h)' : ''), 'hoursPerDay'],
+      ['\u30AD\u30E3\u30C3\u30B7\u30E5\u30D2\u30C3\u30C8\u7387 %', 'cacheHitRate'],
+    ].map(([label, key]) =>
+      '<label class="block"><span class="text-xs text-slate-500">' + label + '</span>' +
+      '<input type="number" data-prefix="' + prefix + '" data-key="' + key + '" value="' + p[key] + '" class="' + inputCls() + '" /></label>'
+    ).join('') +
+    '</div>';
+}
+
+function optionBtns(prefix, p) {
+  return '<div class="flex flex-wrap gap-4 mt-3">' +
+    '<div class="flex items-center gap-2"><span class="text-xs text-slate-400">\u30AD\u30E3\u30C3\u30B7\u30E5:</span><div class="flex gap-1">' +
+      '<button data-prefix="' + prefix + '" data-opt="shared" class="px-3 py-1 text-xs rounded-md border ' + (p.isSharedCache ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">\u5171\u6709</button>' +
+      '<button data-prefix="' + prefix + '" data-opt="personal" class="px-3 py-1 text-xs rounded-md border ' + (!p.isSharedCache ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">\u500B\u5225</button>' +
+    '</div></div>' +
+    '<div class="flex items-center gap-2"><span class="text-xs text-slate-400">Claude Write:</span><div class="flex gap-1">' +
+      '<button data-prefix="' + prefix + '" data-wrt="5m" class="px-3 py-1 text-xs rounded-md border ' + (p.claudeWriteType === '5m' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">5\u5206</button>' +
+      '<button data-prefix="' + prefix + '" data-wrt="1h" class="px-3 py-1 text-xs rounded-md border ' + (p.claudeWriteType === '1h' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">1\u6642\u9593</button>' +
+    '</div></div>' +
+  '</div>';
+}
+
+function modelHeaders(results) {
+  return results.map(r => '<th class="px-4 py-2.5 font-semibold text-xs" style="color:' + r.color + '">' + r.name + '</th>').join('');
+}
+
+// ── Excel Download ─────────────────────────
+function downloadExcel() {
+  var p = state.activeTab === 'scenario' ? state.scenarios[state.activeScenario] : state.sim;
+  var mKeys = Object.keys(pricingData);
+  var mods = mKeys.map(function(k) { return pricingData[k]; });
+  var cols = ['C','D','E','F','G','H'];
+  var wb = XLSX.utils.book_new();
+  var ws = {};
+  function s(a,v) { ws[a] = {t:'s', v:String(v)}; }
+  function n(a,v) { ws[a] = {t:'n', v:Number(v)}; }
+  function fm(a,formula) { ws[a] = {t:'n', f:formula}; }
+
+  // Row 1: Title
+  s('A1', 'AI Cost Strategy Simulator');
+
+  // Row 3-15: Parameters
+  s('A3', '【パラメーター】');
+  var paramList = [
+    ['為替レート (¥/$)', state.exchangeRate],
+    ['キャッシュ書込トークン (C)', p.cacheTokens],
+    ['キャッシュ再利用トークン (R)', p.cacheReadTokens],
+    ['新規プロンプトトークン (P)', p.promptTokens],
+    ['回答トークン (O)', p.outputTokens],
+    ['利用者数 (U)', p.userCount],
+    ['回数/ユーザー (N)', p.reqPerUser],
+    ['テスト日数 (D)', p.testDays],
+    ['稼働時間/日 (h)', p.hoursPerDay],
+    ['キャッシュ共有 (1=共有, 0=個別)', p.isSharedCache ? 1 : 0],
+    ['Claude Write TTL (1=1h, 0=5m)', p.claudeWriteType === '1h' ? 1 : 0],
+    ['キャッシュヒット率 (%)', p.cacheHitRate != null ? p.cacheHitRate : 100],
+  ];
+  paramList.forEach(function(row, i) { s('A'+(4+i), row[0]); n('B'+(4+i), row[1]); });
+
+  // Row 17-20: Derived values
+  s('A17', '【導出値】');
+  s('A18', '総リクエスト数'); fm('B18', 'B9*B10');
+  s('A19', '総保管時間 (h)'); fm('B19', 'B12*B11');
+  s('A20', 'スケール倍率');   fm('B20', 'IF(B13=1,1,B9)');
+
+  // Row 22-28: Unit price table
+  s('A22', '【単価表 ($/MTok)】');
+  mods.forEach(function(m,i) { s(cols[i]+'22', m.name); });
+  s('A23', '入力 (Input)');
+  s('A24', '書込 (Write)');
+  s('A25', '再利用 (Cached Read)');
+  s('A26', '出力 (Output)');
+  s('A27', '保管 (Storage/h)');
+  s('A28', '書込回数/日');
+  mods.forEach(function(m,i) {
+    var c = cols[i], ic = mKeys[i].includes('claude');
+    n(c+'23', m.input);
+    if (ic) { fm(c+'24', 'IF($B$14=1,'+m.cacheWrite1h+','+m.cacheWrite5m+')'); }
+    else    { n(c+'24', m.input); }
+    n(c+'25', m.cachedInput);
+    n(c+'26', m.output);
+    n(c+'27', m.storage);
+    if (ic) { fm(c+'28', 'IF($B$14=1,$B$12,$B$12*12)'); }
+    else    { n(c+'28', 1); }
+  });
+
+  // Row 30-35: Cost breakdown (USD)
+  s('A30', '【コスト内訳 (USD)】');
+  mods.forEach(function(m,i) { s(cols[i]+'30', m.name); });
+  s('A31', 'Write'); s('A32', 'Storage'); s('A33', 'Read'); s('A34', 'Prompt'); s('A35', 'Output');
+  mods.forEach(function(m,i) {
+    var c = cols[i];
+    fm(c+'31', '($B$5/1000000)*'+c+'24*'+c+'28*$B$11*$B$20');
+    fm(c+'32', '($B$5/1000000)*'+c+'27*$B$19*$B$20');
+    fm(c+'33', '($B$6/1000000)*('+c+'25*$B$15/100+'+c+'23*(1-$B$15/100))*$B$18');
+    fm(c+'34', '($B$7/1000000)*'+c+'23*$B$18');
+    fm(c+'35', '($B$8/1000000)*'+c+'26*$B$18');
+  });
+
+  // Row 37-40: Totals
+  s('A37', '【合計】');
+  mods.forEach(function(m,i) { s(cols[i]+'37', m.name); });
+  s('A38', 'USD 合計'); s('A39', 'JPY 合計'); s('A40', '1リクエスト単価 (JPY)');
+  mods.forEach(function(m,i) {
+    var c = cols[i];
+    fm(c+'38', 'SUM('+c+'31:'+c+'35)');
+    fm(c+'39', c+'38*$B$4');
+    fm(c+'40', 'IF($B$18>0,'+c+'39/$B$18,0)');
+  });
+
+  // Row 42-47: Cache effect
+  s('A42', '【キャッシュ効果】');
+  mods.forEach(function(m,i) { s(cols[i]+'42', m.name); });
+  s('A43', 'キャッシュなし合計 (USD)');
+  s('A44', 'キャッシュあり合計 (USD)');
+  s('A45', '削減額 (USD)'); s('A46', '削減額 (JPY)'); s('A47', '削減率');
+  mods.forEach(function(m,i) {
+    var c = cols[i];
+    fm(c+'43', '(($B$6+$B$7)/1000000)*'+c+'23*$B$18+'+c+'35');
+    fm(c+'44', c+'38');
+    fm(c+'45', c+'43-'+c+'44');
+    fm(c+'46', c+'45*$B$4');
+    ws[c+'47'] = {t:'n', f:'IF('+c+'43>0,('+c+'43-'+c+'44)/'+c+'43,0)', z:'0.0%'};
+  });
+
+  // Remarks (column I)
+  s('I3', '備考');
+  s('I13', '1=全ユーザー共有, 0=ユーザー毎に個別');
+  s('I14', '1=1時間TTL, 0=5分TTL');
+  s('I20', '共有=1, 個別=ユーザー数');
+  s('I24', 'Claude: TTLに応じて単価切替');
+  s('I27', 'Geminiのみ課金 (Claudeは0)');
+  s('I28', 'Gemini:永続=1回/日, Claude:TTL再書込');
+  s('I33', 'ヒット率で Cached/Input 価格を加重平均');
+  s('I43', 'キャッシュ未使用: (R+P)を全てInput価格で計算');
+  s('I47', '(なし - あり) / なし');
+
+  // Sheet config
+  ws['!ref'] = 'A1:I47';
+  ws['!cols'] = [{wch:32},{wch:14},{wch:18},{wch:18},{wch:18},{wch:18},{wch:18},{wch:18},{wch:30}];
+  var sheetName = state.activeTab === 'scenario' ? state.scenarios[state.activeScenario].name : 'シミュレーション';
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  XLSX.writeFile(wb, 'cost_simulation.xlsx');
+}
+
+// \u2500\u2500 Render \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+function render() {
+  const app = document.getElementById('app');
+  const isScenario = state.activeTab === 'scenario';
+
+  // \u2500\u2500 Tab bar + header \u2500\u2500
+  let html = '<header class="mb-8 border-b border-slate-200 pb-6">' +
+    '<div class="flex items-baseline justify-between mb-4">' +
+      '<h1 class="text-2xl font-semibold tracking-tight text-slate-900">AI \u30B3\u30B9\u30C8\u30B7\u30DF\u30E5\u30EC\u30FC\u30BF\u30FC</h1>' +
+      '<div class="flex items-center gap-2"><span class="text-xs text-slate-400">\u70BA\u66FF:</span><span class="text-sm text-slate-500">&yen;</span>' +
+        '<input type="number" data-key="exchangeRate" value="' + state.exchangeRate + '" class="w-20 border border-slate-200 rounded-lg px-2 py-1 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/30" />' +
+      '</div>' +
+    '</div>' +
+    '<nav class="flex gap-1">' +
+      '<button data-tab="simulator" class="px-4 py-2 text-sm rounded-t-lg border border-b-0 ' + (!isScenario ? 'bg-white text-slate-900 font-semibold border-slate-200' : 'bg-slate-50 text-slate-400 border-transparent hover:text-slate-600') + '">\u57FA\u672C\u30B7\u30DF\u30E5\u30EC\u30FC\u30BF\u30FC</button>' +
+      '<button data-tab="scenario" class="px-4 py-2 text-sm rounded-t-lg border border-b-0 ' + (isScenario ? 'bg-white text-slate-900 font-semibold border-slate-200' : 'bg-slate-50 text-slate-400 border-transparent hover:text-slate-600') + '">\u30B7\u30CA\u30EA\u30AA\u6BD4\u8F03\uFF08\u7D2F\u7A4D\u30B3\u30B9\u30C8\uFF09</button>' +
+    '</nav>' +
+  '</header>';
+
+  if (!isScenario) {
+    // \u2500\u2500 Simulator Tab \u2500\u2500
+    const p = state.sim;
+    const { results, totalReqs, totalHours } = computeResults(p);
+
+    html += '<section class="mb-8">' +
+      '<div class="flex items-center justify-between mb-4"><h2 class="text-xs font-semibold text-slate-400 uppercase tracking-wider">\u30D1\u30E9\u30E1\u30FC\u30BF\u8A2D\u5B9A</h2>' +
+      '<button onclick="downloadExcel()" class="px-3 py-1.5 text-xs font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">Excel \u30C0\u30A6\u30F3\u30ED\u30FC\u30C9</button></div>' +
+      paramGrid('sim', p, totalHours) + optionBtns('sim', p) +
+    '</section>';
+
+    // Unit price table
+    html += '<section class="mb-8"><h2 class="text-sm font-semibold text-slate-700 mb-3">\u5358\u4FA1\u8868 ($/MTok)</h2>' +
+      '<div class="overflow-x-auto border border-slate-200 rounded-lg"><table class="w-full text-sm"><thead><tr class="bg-slate-50 text-left"><th class="px-4 py-2.5 text-xs text-slate-500"></th>' + modelHeaders(results) + '</tr></thead>' +
+      '<tbody class="font-mono text-xs">' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">\u5165\u529B</td>' + results.map(r => '<td class="px-4 py-2">' + r.input.toFixed(2) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">\u66F8\u8FBC (Write)</td>' + results.map(r => '<td class="px-4 py-2 ' + (r.isClaude ? 'text-amber-600 font-semibold' : '') + '">' + r.writePrice.toFixed(2) + (r.isClaude ? ' *' : '') + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">\u518D\u5229\u7528 (Read)</td>' + results.map(r => '<td class="px-4 py-2 text-blue-600">' + r.cachedInput.toFixed(2) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">\u51FA\u529B</td>' + results.map(r => '<td class="px-4 py-2">' + r.output.toFixed(2) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">\u4FDD\u7BA1 (/h)</td>' + results.map(r => '<td class="px-4 py-2 ' + (r.storage > 0 ? 'text-orange-600' : 'text-slate-400') + '">' + (r.storage > 0 ? r.storage.toFixed(2) : '\u2014') + '</td>').join('') + '</tr>' +
+      '</tbody></table></div>' +
+      '<p class="mt-2 text-[11px] text-slate-400">* Claude Write\u306F\u4E0A\u4E57\u305B (5m:1.25x, 1h:2.0x)\u3002Gemini Write = Input\u3068\u540C\u984D\u3002Read = Input\u306E10%\u3002' +
+        '<a href="https://cloud.google.com/vertex-ai/generative-ai/pricing" target="_blank" class="text-blue-500 hover:underline ml-1">Vertex AI \u2197</a>' +
+        '<a href="https://www.anthropic.com/pricing" target="_blank" class="text-blue-500 hover:underline ml-1">Anthropic \u2197</a></p></section>';
+
+    // Cost breakdown
+    html += '<section class="mb-8"><div class="flex items-baseline gap-4 mb-3"><h2 class="text-sm font-semibold text-slate-700">\u30B3\u30B9\u30C8\u5185\u8A33 (\u00A5)</h2><span class="text-xs text-slate-400">\u7DCF\u30EA\u30AF\u30A8\u30B9\u30C8: ' + totalReqs.toLocaleString() + ' / ' + (p.isSharedCache ? '\u5171\u6709' : '\u500B\u5225') + '</span></div>' +
+      '<div class="overflow-x-auto border border-slate-200 rounded-lg"><table class="w-full text-sm"><thead><tr class="bg-slate-50 text-left"><th class="px-4 py-2.5 text-xs text-slate-500">\u8CBB\u76EE</th>' + modelHeaders(results) + '</tr></thead>' +
+      '<tbody class="font-mono text-xs">' +
+        ['Write', 'Read', 'Prompt', 'Output', 'Storage'].map((label, i) => {
+          const keys = ['write', 'read', 'prompt', 'outputCost', 'storageCost'];
+          const k = keys[i];
+          let row = '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">' + (i+1) + '. ' + label + '</td>' +
+            results.map(r => {
+              if (k === 'storageCost' && r.storageCost === 0) return '<td class="px-4 py-2 text-slate-400">\u2014</td>';
+              return '<td class="px-4 py-2 ' + (k === 'storageCost' && r.storageCost > 0 ? 'text-orange-600' : '') + '">&yen;' + fJ(r[k]) + '</td>';
+            }).join('') + '</tr>';
+          // Show writes/day after Write row
+          if (k === 'write') {
+            row += '<tr class="border-t border-slate-50 bg-slate-50/50"><td class="px-4 py-1 text-[11px] text-slate-400 font-sans pl-8">\u2514 \u66F8\u8FBC\u56DE\u6570/\u65E5 (TTL)</td>' +
+              results.map(r => '<td class="px-4 py-1 text-[11px] text-slate-400">' + r.writesPerDay + '\u56DE/\u65E5' + (r.isClaude ? ' (' + (p.claudeWriteType === '1h' ? '1h TTL' : '5m TTL') + ')' : ' (\u6301\u7D9A)') + '</td>').join('') + '</tr>';
+          }
+          return row;
+        }).join('') +
+        '<tr class="border-t-2 border-slate-300 bg-slate-50 font-semibold"><td class="px-4 py-3 font-sans font-semibold text-slate-700">\u5408\u8A08</td>' +
+          results.map(r => '<td class="px-4 py-3 text-slate-900">&yen;' + fJ(r.total) + ' <span class="text-slate-400 font-normal text-[10px]">($' + fU(r.total) + ')</span></td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-200"><td class="px-4 py-2 font-sans text-slate-500">1\u30EA\u30AF\u30A8\u30B9\u30C8\u5358\u4FA1</td>' +
+          results.map(r => '<td class="px-4 py-2 font-semibold">&yen;' + fJ2(r.perReq) + '</td>').join('') + '</tr>' +
+      '</tbody></table></div></section>';
+
+    // Cache effect
+    html += '<section class="mb-8"><div class="flex items-baseline gap-3 mb-3"><h2 class="text-sm font-semibold text-slate-700">\u30AD\u30E3\u30C3\u30B7\u30E5\u52B9\u679C</h2><span class="text-xs text-slate-400">\u30D2\u30C3\u30C8\u7387 ' + p.cacheHitRate + '%</span></div>' +
+      '<div class="overflow-x-auto border border-slate-200 rounded-lg"><table class="w-full text-sm"><thead><tr class="bg-slate-50 text-left"><th class="px-4 py-2.5 text-xs text-slate-500"></th>' + modelHeaders(results) + '</tr></thead>' +
+      '<tbody class="font-mono text-xs">' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">\u30AD\u30E3\u30C3\u30B7\u30E5\u306A\u3057</td>' + results.map(r => '<td class="px-4 py-2">&yen;' + fJ(r.noCache) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">\u30AD\u30E3\u30C3\u30B7\u30E5\u3042\u308A</td>' + results.map(r => '<td class="px-4 py-2">&yen;' + fJ(r.total) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-200 bg-green-50/50"><td class="px-4 py-2.5 font-sans font-semibold text-green-700">\u524A\u6E1B\u7387</td>' +
+          results.map(r => '<td class="px-4 py-2.5 font-semibold text-green-700">-' + r.savPct + '% <span class="font-normal text-green-600">(&yen;' + fJ(r.savUSD) + ')</span></td>').join('') + '</tr>' +
+      '</tbody></table></div></section>';
+
+  } else {
+    // \u2500\u2500 Scenario Tab \u2500\u2500
+    const sc = state.scenarios[state.activeScenario];
+
+    // Scenario selector
+    html += '<section class="mb-6"><div class="flex items-center gap-3 mb-4">' +
+      '<h2 class="text-sm font-semibold text-slate-700">\u30B7\u30CA\u30EA\u30AA\u9078\u629E</h2>' +
+      '<div class="flex gap-1">' +
+        state.scenarios.map((s, i) =>
+          '<button data-scenario="' + i + '" class="px-4 py-2 text-xs rounded-lg border transition-colors ' +
+          (i === state.activeScenario ? 'bg-slate-800 text-white border-slate-800 font-semibold' : 'border-slate-200 text-slate-500 hover:border-slate-400') +
+          '">' + s.name + '</button>'
+        ).join('') +
+      '</div></div>' +
+      paramGrid('sc', sc, sc.hoursPerDay * sc.testDays) + optionBtns('sc', sc) +
+    '</section>';
+
+    // Time series chart
+    const series = computeTimeSeries(sc);
+    html += '<section class="mb-8"><h2 class="text-sm font-semibold text-slate-700 mb-3">\u7D2F\u7A4D\u30B3\u30B9\u30C8\u63A8\u79FB (\u00A5)</h2>' +
+      buildChart(series, sc.testDays, state.exchangeRate) +
+    '</section>';
+
+    // Daily cost summary
+    const { results: scResults, totalReqs: scTotalReqs } = computeResults(sc);
+    html += '<section class="mb-8"><div class="flex items-baseline gap-4 mb-3"><h2 class="text-sm font-semibold text-slate-700">\u30B7\u30CA\u30EA\u30AA\u7D50\u679C\u4E00\u89A7</h2><span class="text-xs text-slate-400">' + sc.testDays + '\u65E5\u9593 / ' + scTotalReqs.toLocaleString() + ' reqs / ' + (sc.isSharedCache ? '\u5171\u6709' : '\u500B\u5225') + '</span><button onclick="downloadExcel()" class="ml-auto px-3 py-1.5 text-xs font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">Excel \u30C0\u30A6\u30F3\u30ED\u30FC\u30C9</button></div>' +
+      '<div class="overflow-x-auto border border-slate-200 rounded-lg"><table class="w-full text-sm"><thead><tr class="bg-slate-50 text-left"><th class="px-4 py-2.5 text-xs text-slate-500"></th>' + modelHeaders(scResults) + '</tr></thead>' +
+      '<tbody class="font-mono text-xs">' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">1\u65E5\u3042\u305F\u308A\u30B3\u30B9\u30C8</td>' + series.map(s => '<td class="px-4 py-2">&yen;' + fJ(s.daily) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100 bg-slate-50 font-semibold"><td class="px-4 py-2 font-sans text-slate-700">' + sc.testDays + '\u65E5\u9593\u5408\u8A08</td>' + scResults.map(r => '<td class="px-4 py-2 text-slate-900">&yen;' + fJ(r.total) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">1\u30EA\u30AF\u30A8\u30B9\u30C8\u5358\u4FA1</td>' + scResults.map(r => '<td class="px-4 py-2">&yen;' + fJ2(r.perReq) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-200 bg-green-50/50"><td class="px-4 py-2 font-sans font-semibold text-green-700">\u30AD\u30E3\u30C3\u30B7\u30E5\u524A\u6E1B\u7387</td>' +
+          scResults.map(r => '<td class="px-4 py-2 font-semibold text-green-700">-' + r.savPct + '%</td>').join('') + '</tr>' +
+      '</tbody></table></div></section>';
+
+    // Day-by-day table
+    html += '<section class="mb-8"><h2 class="text-sm font-semibold text-slate-700 mb-3">\u65E5\u5225\u7D2F\u7A4D\u30B3\u30B9\u30C8 (\u00A5)</h2>' +
+      '<div class="overflow-x-auto border border-slate-200 rounded-lg max-h-[400px] overflow-y-auto"><table class="w-full text-sm"><thead class="sticky top-0 z-10"><tr class="bg-slate-50 text-left"><th class="px-4 py-2.5 text-xs text-slate-500">\u65E5\u6570</th>' + modelHeaders(scResults) + '</tr></thead>' +
+      '<tbody class="font-mono text-xs">';
+    const step = sc.testDays <= 14 ? 1 : sc.testDays <= 60 ? 2 : 5;
+    for (let d = step; d <= sc.testDays; d += step) {
+      html += '<tr class="border-t border-slate-100' + (d === sc.testDays ? ' bg-slate-50 font-semibold' : '') + '"><td class="px-4 py-1.5 text-slate-500 font-sans">' + d + '\u65E5\u76EE</td>' +
+        series.map(s => '<td class="px-4 py-1.5">&yen;' + fJ(s.daily * d) + '</td>').join('') + '</tr>';
+    }
+    html += '</tbody></table></div></section>';
+  }
+
+  // Footer
+  html += '<footer class="text-xs text-slate-400 border-t border-slate-200 pt-6 mt-8"><p>2026\u5E742\u6708\u6642\u70B9\u306E\u516C\u5F0F\u4FA1\u683C\u306B\u57FA\u3065\u304F\u3002</p></footer>';
+
+  app.innerHTML = html;
+
+  // \u2500\u2500 Bind Events \u2500\u2500
+  app.querySelectorAll('button[data-tab]').forEach(el => {
+    el.addEventListener('click', () => { state.activeTab = el.dataset.tab; render(); });
+  });
+  app.querySelectorAll('input[data-key="exchangeRate"]').forEach(el => {
+    el.addEventListener('input', (e) => {
+      if (e.target.value === '' || isNaN(Number(e.target.value))) return;
+      state.exchangeRate = Number(e.target.value);
+      debouncedRender('exchangeRate');
+    });
+  });
+  // Param inputs
+  app.querySelectorAll('input[data-prefix]').forEach(el => {
+    el.addEventListener('input', (e) => {
+      if (e.target.value === '' || isNaN(Number(e.target.value))) return;
+      const target = e.target.dataset.prefix === 'sim' ? state.sim : state.scenarios[state.activeScenario];
+      target[e.target.dataset.key] = Number(e.target.value);
+      debouncedRender(e.target.dataset.key, e.target.dataset.prefix);
+    });
+  });
+  // Option buttons
+  app.querySelectorAll('button[data-opt]').forEach(el => {
+    el.addEventListener('click', () => {
+      const target = el.dataset.prefix === 'sim' ? state.sim : state.scenarios[state.activeScenario];
+      target.isSharedCache = el.dataset.opt === 'shared';
+      render();
+    });
+  });
+  app.querySelectorAll('button[data-wrt]').forEach(el => {
+    el.addEventListener('click', () => {
+      const target = el.dataset.prefix === 'sim' ? state.sim : state.scenarios[state.activeScenario];
+      target.claudeWriteType = el.dataset.wrt;
+      render();
+    });
+  });
+  // Scenario buttons
+  app.querySelectorAll('button[data-scenario]').forEach(el => {
+    el.addEventListener('click', () => { state.activeScenario = Number(el.dataset.scenario); render(); });
+  });
+}
+
+let _renderTimer = null;
+function debouncedRender(key, prefix) {
+  clearTimeout(_renderTimer);
+  _renderTimer = setTimeout(function() {
+    render();
+    if (key) restoreFocus(key, prefix);
+  }, 300);
+}
+
+function restoreFocus(key, prefix) {
+  const sel = prefix ? 'input[data-prefix="' + prefix + '"][data-key="' + key + '"]' : 'input[data-key="' + key + '"]';
+  const next = document.querySelector(sel);
+  if (next) { next.focus(); try { next.selectionStart = next.selectionEnd = next.value.length; } catch(e) {} }
+}
+
+// \u2500\u2500 Bootstrap \u2500\u2500
+render();
+</script>
+</body>
+</html>`;
+
+Deno.serve({ port: 8000 }, (_req: Request) => {
+  const html = HTML.replace("__PRICING_DATA__", pricingJson);
+  return new Response(html, {
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+});
