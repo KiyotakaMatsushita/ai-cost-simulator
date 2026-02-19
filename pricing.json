@@ -64,5 +64,27 @@
     "output": 25.00,
     "storage": 0,
     "color": "#DC2626"
+  },
+  "gpt5Mini": {
+    "name": "GPT-5 Mini",
+    "platform": "OpenAI",
+    "input": 0.25,
+    "cacheWrite5m": 0.25,
+    "cacheWrite1h": 0.25,
+    "cachedInput": 0.025,
+    "output": 2.00,
+    "storage": 0,
+    "color": "#10A37F"
+  },
+  "gpt5": {
+    "name": "GPT-5",
+    "platform": "OpenAI",
+    "input": 1.25,
+    "cacheWrite5m": 1.25,
+    "cacheWrite1h": 1.25,
+    "cachedInput": 0.125,
+    "output": 10.00,
+    "storage": 0,
+    "color": "#171717"
   }
 }

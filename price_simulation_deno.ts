@@ -96,6 +96,21 @@ function calcClaudeWpd(p) {
 function getClaudeWpd(p) {
   return (p.claudeWritesPerDay > 0) ? p.claudeWritesPerDay : calcClaudeWpd(p);
 }
+// OpenAI: automatic caching, no write surcharge, ~5min TTL
+function calcOpenAIWpd(p) {
+  const totalReqs = p.userCount * p.reqPerUser;
+  const rpd = p.isSharedCache ? totalReqs / p.testDays : p.reqPerUser / p.testDays;
+  if (rpd === 0 || p.hoursPerDay === 0) return 0;
+  const ttlHours = 5 / 60;
+  const avgInterval = p.hoursPerDay / rpd;
+  if (avgInterval <= ttlHours) return 1;
+  return Math.ceil(rpd);
+}
+function getWpd(key, p) {
+  if (key.includes('claude')) return getClaudeWpd(p);
+  if (key.includes('gpt')) return calcOpenAIWpd(p);
+  return 1; // Gemini: persistent
+}
 
 function computeResults(p) {
   const totalReqs = p.userCount * p.reqPerUser;
@@ -103,11 +118,11 @@ function computeResults(p) {
   const hitRate = (p.cacheHitRate ?? 100) / 100;
   const results = Object.entries(pricingData).map(([key, m]) => {
     const ic = key.includes('claude');
+    const io = key.includes('gpt');
     const cM = p.cacheTokens / 1e6, rM = p.cacheReadTokens / 1e6, pM = p.promptTokens / 1e6, oM = p.outputTokens / 1e6;
     const sc = p.isSharedCache ? 1 : p.userCount;
     const wp = ic ? (p.claudeWriteType === '1h' ? m.cacheWrite1h : m.cacheWrite5m) : m.input;
-    // Writes/day: Gemini=1 (persistent w/ storage), Claude=user-specified or auto-calculated (TTL sliding window)
-    const wpd = ic ? getClaudeWpd(p) : 1;
+    const wpd = getWpd(key, p);
     const wr = cM * wp * wpd * p.testDays * sc;
     const st = cM * m.storage * totalHours * sc;
     // Cache miss pays full input price instead of cached price
@@ -117,7 +132,7 @@ function computeResults(p) {
     const tot = wr + st + rd + pr + ou;
     const pReq = totalReqs > 0 ? tot / totalReqs : 0;
     const noC = (p.cacheReadTokens + p.promptTokens) / 1e6 * m.input * totalReqs + ou;
-    return { ...m, id: key, isClaude: ic, writePrice: wp, writesPerDay: wpd, write: wr, storageCost: st, read: rd, prompt: pr, outputCost: ou, total: tot, perReq: pReq, noCache: noC, savPct: (((noC - tot) / noC) * 100).toFixed(1), savUSD: noC - tot };
+    return { ...m, id: key, isClaude: ic, isOpenAI: io, writePrice: wp, writesPerDay: wpd, write: wr, storageCost: st, read: rd, prompt: pr, outputCost: ou, total: tot, perReq: pReq, noCache: noC, savPct: (((noC - tot) / noC) * 100).toFixed(1), savUSD: noC - tot };
   });
   return { results, totalReqs, totalHours };
 }
@@ -130,7 +145,7 @@ function computeTimeSeries(p) {
     const cM = p.cacheTokens / 1e6, rM = p.cacheReadTokens / 1e6, pM = p.promptTokens / 1e6, oM = p.outputTokens / 1e6;
     const sc = p.isSharedCache ? 1 : p.userCount;
     const wp = ic ? (p.claudeWriteType === '1h' ? m.cacheWrite1h : m.cacheWrite5m) : m.input;
-    const wpd = ic ? getClaudeWpd(p) : 1;
+    const wpd = getWpd(key, p);
     const dWrite = cM * wp * wpd * sc;
     const dStorage = cM * m.storage * p.hoursPerDay * sc;
     const dRead = rM * (m.cachedInput * hitRate + m.input * (1 - hitRate)) * dailyReqs;
@@ -248,7 +263,7 @@ function downloadExcel() {
   var p = state.activeTab === 'scenario' ? state.scenarios[state.activeScenario] : state.sim;
   var mKeys = Object.keys(pricingData);
   var mods = mKeys.map(function(k) { return pricingData[k]; });
-  var cols = ['C','D','E','F','G','H'];
+  var cols = ['C','D','E','F','G','H','I','J'];
   var wb = XLSX.utils.book_new();
   var ws = {};
   function s(a,v) { ws[a] = {t:'s', v:String(v)}; }
@@ -294,15 +309,14 @@ function downloadExcel() {
   s('A29', '保管 (Storage/h)');
   s('A30', '書込回数/日');
   mods.forEach(function(m,i) {
-    var c = cols[i], ic = mKeys[i].includes('claude');
+    var c = cols[i], ic = mKeys[i].includes('claude'), io = mKeys[i].includes('gpt');
     n(c+'25', m.input);
     if (ic) { fm(c+'26', 'IF($B$14=1,'+m.cacheWrite1h+','+m.cacheWrite5m+')'); }
     else    { n(c+'26', m.input); }
     n(c+'27', m.cachedInput);
     n(c+'28', m.output);
     n(c+'29', m.storage);
-    if (ic) { n(c+'30', getClaudeWpd(p)); }
-    else    { n(c+'30', 1); }
+    n(c+'30', getWpd(mKeys[i], p));
   });
 
   // Row 32-37: Cost breakdown (USD)
@@ -344,23 +358,23 @@ function downloadExcel() {
     ws[c+'49'] = {t:'n', f:'IF('+c+'45>0,('+c+'45-'+c+'46)/'+c+'45,0)', z:'0.0%'};
   });
 
-  // Remarks (column I)
-  s('I3', '備考');
-  s('I13', '1=全ユーザー共有, 0=ユーザー毎に個別');
-  s('I14', '1=1時間TTL, 0=5分TTL');
-  s('I16', '0=リクエスト頻度から自動計算, >0=手動指定');
-  s('I17', 'TTL内にリクエストがあればキャッシュ維持(sliding window)');
-  s('I22', '共有=1, 個別=ユーザー数');
-  s('I26', 'Claude: TTLに応じて単価切替');
-  s('I29', 'Geminiのみ課金 (Claudeは0)');
-  s('I30', 'Claude: 実効値(B17)を使用, Gemini:永続=1回/日');
-  s('I35', 'ヒット率で Cached/Input 価格を加重平均');
-  s('I45', 'キャッシュ未使用: (R+P)を全てInput価格で計算');
-  s('I49', '(なし - あり) / なし');
+  // Remarks (column K)
+  s('K3', '備考');
+  s('K13', '1=全ユーザー共有, 0=ユーザー毎に個別');
+  s('K14', '1=1時間TTL, 0=5分TTL');
+  s('K16', '0=リクエスト頻度から自動計算, >0=手動指定');
+  s('K17', 'TTL内にリクエストがあればキャッシュ維持(sliding window)');
+  s('K22', '共有=1, 個別=ユーザー数');
+  s('K26', 'Claude: TTLに応じて単価切替, OpenAI: Input同額');
+  s('K29', 'Geminiのみ課金 (Claude/OpenAIは0)');
+  s('K30', 'Claude: sliding window TTL, OpenAI: 自動~5m, Gemini: 永続=1回/日');
+  s('K35', 'ヒット率で Cached/Input 価格を加重平均');
+  s('K45', 'キャッシュ未使用: (R+P)を全てInput価格で計算');
+  s('K49', '(なし - あり) / なし');
 
   // Sheet config
-  ws['!ref'] = 'A1:I49';
-  ws['!cols'] = [{wch:32},{wch:14},{wch:18},{wch:18},{wch:18},{wch:18},{wch:18},{wch:18},{wch:30}];
+  ws['!ref'] = 'A1:K49';
+  ws['!cols'] = [{wch:32},{wch:14},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:32}];
   var sheetName = state.activeTab === 'scenario' ? state.scenarios[state.activeScenario].name : 'シミュレーション';
   XLSX.utils.book_append_sheet(wb, ws, sheetName);
   XLSX.writeFile(wb, 'cost_simulation.xlsx');
@@ -411,9 +425,10 @@ function render() {
         '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">\u51FA\u529B</td>' + results.map(r => '<td class="px-4 py-2">' + r.output.toFixed(2) + '</td>').join('') + '</tr>' +
         '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">\u4FDD\u7BA1 (/h)</td>' + results.map(r => '<td class="px-4 py-2 ' + (r.storage > 0 ? 'text-orange-600' : 'text-slate-400') + '">' + (r.storage > 0 ? r.storage.toFixed(2) : '\u2014') + '</td>').join('') + '</tr>' +
       '</tbody></table></div>' +
-      '<p class="mt-2 text-[11px] text-slate-400">* Claude Write\u306F\u4E0A\u4E57\u305B (5m:1.25x, 1h:2.0x)\u3002Gemini Write = Input\u3068\u540C\u984D\u3002Read = Input\u306E10%\u3002' +
+      '<p class="mt-2 text-[11px] text-slate-400">* Claude Write\u306F\u4E0A\u4E57\u305B (5m:1.25x, 1h:2.0x)\u3002Gemini/OpenAI Write = Input\u3068\u540C\u984D\u3002Read = Input\u306E10%\u3002' +
         '<a href="https://cloud.google.com/vertex-ai/generative-ai/pricing" target="_blank" class="text-blue-500 hover:underline ml-1">Vertex AI \u2197</a>' +
-        '<a href="https://www.anthropic.com/pricing" target="_blank" class="text-blue-500 hover:underline ml-1">Anthropic \u2197</a></p></section>';
+        '<a href="https://www.anthropic.com/pricing" target="_blank" class="text-blue-500 hover:underline ml-1">Anthropic \u2197</a>' +
+        '<a href="https://openai.com/api/pricing/" target="_blank" class="text-blue-500 hover:underline ml-1">OpenAI \u2197</a></p></section>';
 
     // Cost breakdown
     html += '<section class="mb-8"><div class="flex items-baseline gap-4 mb-3"><h2 class="text-sm font-semibold text-slate-700">\u30B3\u30B9\u30C8\u5185\u8A33 (\u00A5)</h2><span class="text-xs text-slate-400">\u7DCF\u30EA\u30AF\u30A8\u30B9\u30C8: ' + totalReqs.toLocaleString() + ' / ' + (p.isSharedCache ? '\u5171\u6709' : '\u500B\u5225') + '</span></div>' +
@@ -430,7 +445,7 @@ function render() {
           // Show writes/day after Write row
           if (k === 'write') {
             row += '<tr class="border-t border-slate-50 bg-slate-50/50"><td class="px-4 py-1 text-[11px] text-slate-400 font-sans pl-8">\u2514 \u66F8\u8FBC\u56DE\u6570/\u65E5 (TTL)</td>' +
-              results.map(r => '<td class="px-4 py-1 text-[11px] text-slate-400">' + r.writesPerDay + '\u56DE/\u65E5' + (r.isClaude ? ' (' + (p.claudeWriteType === '1h' ? '1h TTL' : '5m TTL') + ')' : ' (\u6301\u7D9A)') + '</td>').join('') + '</tr>';
+              results.map(r => '<td class="px-4 py-1 text-[11px] text-slate-400">' + r.writesPerDay + '\u56DE/\u65E5' + (r.isClaude ? ' (' + (p.claudeWriteType === '1h' ? '1h TTL' : '5m TTL') + ')' : r.isOpenAI ? ' (\u81EA\u52D5~5m)' : ' (\u6301\u7D9A)') + '</td>').join('') + '</tr>';
           }
           return row;
         }).join('') +
