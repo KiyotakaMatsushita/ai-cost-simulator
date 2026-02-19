@@ -555,7 +555,13 @@ function debouncedRender(key, prefix) {
 function restoreFocus(key, prefix) {
   const sel = prefix ? 'input[data-prefix="' + prefix + '"][data-key="' + key + '"]' : 'input[data-key="' + key + '"]';
   const next = document.querySelector(sel);
-  if (next) { next.focus(); try { next.selectionStart = next.selectionEnd = next.value.length; } catch(e) {} }
+  if (next) {
+    next.focus();
+    try { next.selectionStart = next.selectionEnd = next.value.length; } catch(e) {
+      // number inputs don't support selectionStart; re-set value to move cursor to end
+      var v = next.value; next.value = ''; next.value = v;
+    }
+  }
 }
 
 // \u2500\u2500 Bootstrap \u2500\u2500
