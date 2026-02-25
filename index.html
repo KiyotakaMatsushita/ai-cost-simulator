@@ -12,6 +12,10 @@
   input[type=number]::-webkit-inner-spin-button,
   input[type=number]::-webkit-outer-spin-button { opacity: 1; }
   table { border-collapse: collapse; }
+  .tip { position: relative; cursor: help; }
+  .tip .tip-text { visibility: hidden; opacity: 0; position: absolute; left: 50%; bottom: calc(100% + 6px); transform: translateX(-50%); background: #1e293b; color: #f8fafc; font-size: 11px; line-height: 1.5; padding: 6px 10px; border-radius: 6px; white-space: nowrap; z-index: 50; pointer-events: none; transition: opacity 0.15s; }
+  .tip .tip-text::after { content: ''; position: absolute; top: 100%; left: 50%; margin-left: -4px; border: 4px solid transparent; border-top-color: #1e293b; }
+  .tip:hover .tip-text { visibility: visible; opacity: 1; }
 </style>
 </head>
 <body class="min-h-screen bg-white text-slate-800 antialiased">
@@ -108,7 +112,8 @@ const pricingData = {
     "storage": 0,
     "color": "#171717"
   }
-};
+}
+;
 
 // \u2500\u2500 Presets \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 const presets = [
@@ -132,6 +137,20 @@ const presets = [
   },
 ];
 
+// \u2500\u2500 AgentCore Memory Pricing \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+const memoryPricing = {
+  stmEvent:      0.25 / 1000,
+  ltmStorage:    0.75 / 1000,
+  ltmStorageOvr: 0.25 / 1000,
+  ltmRetrieval:  0.50 / 1000,
+};
+
+const memoryPresets = [
+  { name: '\u5C0F\u898F\u6A21 PoC', desc: '100\u4EBA\u00D7\u9031\u6570\u56DE', userCount: 100, sessionsPerUser: 8, roundtripsPerSession: 2, retrievalsPerSession: 1, recordsPerUser: 5, useOverrideStrategy: false },
+  { name: '\u672C\u756A\u904B\u7528', desc: '1\u4E07\u4EBA\u00D7\u65E5\u5E38\u5229\u7528', userCount: 10000, sessionsPerUser: 20, roundtripsPerSession: 2, retrievalsPerSession: 1, recordsPerUser: 10, useOverrideStrategy: false },
+  { name: '\u5927\u898F\u6A21', desc: '10\u4E07\u4EBA\u00D7\u9AD8\u983B\u5EA6', userCount: 100000, sessionsPerUser: 30, roundtripsPerSession: 3, retrievalsPerSession: 2, recordsPerUser: 20, useOverrideStrategy: false },
+];
+
 // \u2500\u2500 State \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 const state = {
   activeTab: 'simulator',
@@ -145,6 +164,17 @@ const state = {
   // Scenario tab
   activeScenario: 0,
   scenarios: presets.map(p => ({ ...p })),
+  // Memory tab
+  mem: {
+    userCount: 10000,
+    sessionsPerUser: 20,
+    roundtripsPerSession: 2,
+    retrievalsPerSession: 1,
+    recordsPerUser: 10,
+    batchSize: 1,
+    ltmRetrievalTiming: 'every',
+    useOverrideStrategy: false,
+  },
 };
 
 // \u2500\u2500 Helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
@@ -229,6 +259,38 @@ function computeTimeSeries(p) {
   });
 }
 
+function computeMemoryResults(m) {
+  const totalSessions = m.userCount * m.sessionsPerUser;
+  const totalRoundtrips = totalSessions * m.roundtripsPerSession;
+  const eventsPerRT = Math.ceil(2 / (m.batchSize || 1));
+  const totalEvents = totalRoundtrips * eventsPerRT;
+  const totalRetrievals = m.ltmRetrievalTiming === 'first'
+    ? totalSessions * m.retrievalsPerSession
+    : totalRoundtrips * m.retrievalsPerSession;
+  const totalRecords = m.userCount * m.recordsPerUser;
+
+  const stmCost = totalEvents * memoryPricing.stmEvent;
+  const ltmStorageCostDefault = totalRecords * memoryPricing.ltmStorage;
+  const ltmStorageCostOverride = totalRecords * memoryPricing.ltmStorageOvr;
+  const ltmStorageCost = m.useOverrideStrategy ? ltmStorageCostOverride : ltmStorageCostDefault;
+  const ltmRetrievalCost = totalRetrievals * memoryPricing.ltmRetrieval;
+  const totalCostDefault = stmCost + ltmStorageCostDefault + ltmRetrievalCost;
+  const totalCostOverride = stmCost + ltmStorageCostOverride + ltmRetrievalCost;
+  const totalCost = stmCost + ltmStorageCost + ltmRetrievalCost;
+
+  const perRequest = totalRoundtrips > 0 ? totalCost / totalRoundtrips : 0;
+  const perSession = totalSessions > 0 ? totalCost / totalSessions : 0;
+  const perUserMonth = m.userCount > 0 ? totalCost / m.userCount : 0;
+  const perUserYear = perUserMonth * 12;
+
+  return {
+    totalSessions, totalEvents, totalRetrievals, totalRecords, totalRoundtrips, eventsPerRT,
+    stmCost, ltmStorageCost, ltmStorageCostDefault, ltmStorageCostOverride,
+    ltmRetrievalCost, totalCost, totalCostDefault, totalCostOverride,
+    perRequest, perSession, perUserMonth, perUserYear,
+  };
+}
+
 function niceNum(v) {
   if (v <= 0) return 1;
   const exp = Math.floor(Math.log10(v));
@@ -281,6 +343,40 @@ function buildChart(series, maxDays, rate) {
   return svg;
 }
 
+function buildPieChart(slices) {
+  const total = slices.reduce((s, d) => s + d.value, 0);
+  if (total === 0) return '<p class="text-sm text-slate-400">No data</p>';
+  const W = 320, H = 240, cx = 120, cy = 120, R = 90, r = 55;
+  let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" class="w-full max-w-xs">';
+  let angle = -Math.PI / 2;
+  slices.forEach((d, i) => {
+    const pct = d.value / total;
+    const a1 = angle;
+    const a2 = angle + pct * 2 * Math.PI;
+    const large = pct > 0.5 ? 1 : 0;
+    const x1o = cx + R * Math.cos(a1), y1o = cy + R * Math.sin(a1);
+    const x2o = cx + R * Math.cos(a2), y2o = cy + R * Math.sin(a2);
+    const x1i = cx + r * Math.cos(a2), y1i = cy + r * Math.sin(a2);
+    const x2i = cx + r * Math.cos(a1), y2i = cy + r * Math.sin(a1);
+    svg += '<path d="M' + x1o + ',' + y1o + ' A' + R + ',' + R + ' 0 ' + large + ' 1 ' + x2o + ',' + y2o +
+      ' L' + x1i + ',' + y1i + ' A' + r + ',' + r + ' 0 ' + large + ' 0 ' + x2i + ',' + y2i + ' Z" fill="' + d.color + '" opacity="0.85"/>';
+    angle = a2;
+  });
+  // center text
+  svg += '<text x="' + cx + '" y="' + (cy - 4) + '" text-anchor="middle" font-size="10" fill="#64748b">Total</text>';
+  svg += '<text x="' + cx + '" y="' + (cy + 12) + '" text-anchor="middle" font-size="13" font-weight="600" fill="#1e293b">$' + fU(total) + '</text>';
+  // legend
+  const lx = 250;
+  slices.forEach((d, i) => {
+    const ly = 60 + i * 50;
+    svg += '<rect x="' + lx + '" y="' + (ly - 6) + '" width="10" height="10" rx="2" fill="' + d.color + '"/>';
+    svg += '<text x="' + (lx + 16) + '" y="' + (ly + 3) + '" font-size="10" fill="#475569">' + d.label + '</text>';
+    svg += '<text x="' + (lx + 16) + '" y="' + (ly + 17) + '" font-size="11" font-weight="600" fill="#1e293b">$' + fU(d.value) + ' (' + (total > 0 ? (d.value / total * 100).toFixed(1) : '0') + '%)</text>';
+  });
+  svg += '</svg>';
+  return svg;
+}
+
 function inputCls() { return 'mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400'; }
 
 function paramGrid(prefix, p, totalHours) {
@@ -298,6 +394,24 @@ function paramGrid(prefix, p, totalHours) {
     ].map(([label, key]) =>
       '<label class="block"><span class="text-xs text-slate-500">' + label + '</span>' +
       '<input type="number" data-prefix="' + prefix + '" data-key="' + key + '" value="' + p[key] + '" class="' + inputCls() + '" /></label>'
+    ).join('') +
+    '</div>';
+}
+
+function memoryParamGrid(m) {
+  const fields = [
+    ['\u30E6\u30FC\u30B6\u30FC\u6570', 'userCount', '\u6708\u9593\u30A2\u30AF\u30C6\u30A3\u30D6\u30E6\u30FC\u30B6\u30FC\u6570'],
+    ['\u30BB\u30C3\u30B7\u30E7\u30F3/\u30E6\u30FC\u30B6\u30FC/\u6708', 'sessionsPerUser', '1\u30E6\u30FC\u30B6\u30FC\u304C\u6708\u306B\u958B\u59CB\u3059\u308B\u4F1A\u8A71\u306E\u56DE\u6570\u3002\u30BB\u30C3\u30B7\u30E7\u30F3 = 1\u56DE\u306E\u4F1A\u8A71 (session_id)'],
+    ['\u30EA\u30AF\u30A8\u30B9\u30C8/\u30BB\u30C3\u30B7\u30E7\u30F3', 'roundtripsPerSession', '1\u4F1A\u8A71\u5185\u306E\u5F80\u5FA9\u56DE\u6570\u3002\u30E6\u30FC\u30B6\u30FC\u767A\u8A00\u2192AI\u5FDC\u7B54 = 1\u30EA\u30AF\u30A8\u30B9\u30C8\u3002\u5404\u30EA\u30AF\u30A8\u30B9\u30C8\u3067STM\u30A4\u30D9\u30F3\u30C8\u00D72\u304C\u767A\u751F'],
+    ['LTM\u691C\u7D22/\u30EA\u30AF\u30A8\u30B9\u30C8', 'retrievalsPerSession', '\u30EA\u30AF\u30A8\u30B9\u30C8\u3054\u3068\u306BLTM\u304B\u3089\u904E\u53BB\u306E\u8A18\u61B6\u3092\u691C\u7D22\u3059\u308B\u56DE\u6570\u3002\u901A\u5E381\u56DE'],
+    ['LTM\u30EC\u30B3\u30FC\u30C9/\u30E6\u30FC\u30B6\u30FC', 'recordsPerUser', '\u30E6\u30FC\u30B6\u30FC\u3054\u3068\u306B\u84C4\u7A4D\u3055\u308C\u308BLTM\u30EC\u30B3\u30FC\u30C9\u6570\uFF08\u597D\u307F\u30FB\u4E8B\u5B9F\u7B49\uFF09'],
+  ];
+  return '<div class="grid grid-cols-2 lg:grid-cols-3 gap-3">' +
+    fields.map(([label, key, desc]) =>
+      '<label class="block"><span class="text-xs text-slate-500">' + label +
+        ' <span class="tip"><svg class="inline w-3.5 h-3.5 -mt-0.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="1.5"/><path stroke-width="1.5" d="M9.5 9.5a2.5 2.5 0 0 1 4.99.5c0 1.5-2.49 2-2.49 3M12 17h.01"/></svg>' +
+        '<span class="tip-text">' + desc + '</span></span></span>' +
+      '<input type="number" data-prefix="mem" data-key="' + key + '" value="' + m[key] + '" class="' + inputCls() + '" /></label>'
     ).join('') +
     '</div>';
 }
@@ -448,13 +562,72 @@ function downloadExcel() {
   ws['!cols'] = [{wch:32},{wch:14},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:32}];
   var sheetName = state.activeTab === 'scenario' ? state.scenarios[state.activeScenario].name : 'シミュレーション';
   XLSX.utils.book_append_sheet(wb, ws, sheetName);
+
+  // AgentCore Memory sheet
+  var ms = {};
+  function ms_s(a,v) { ms[a] = {t:'s', v:String(v)}; }
+  function ms_n(a,v) { ms[a] = {t:'n', v:Number(v)}; }
+  var mr = computeMemoryResults(state.mem);
+  var mm = state.mem;
+  ms_s('A1', 'AgentCore Memory コストシミュレーション');
+
+  ms_s('A3', '【パラメーター】');
+  var memParams = [
+    ['為替レート (¥/$)', state.exchangeRate],
+    ['ユーザー数', mm.userCount],
+    ['セッション/ユーザー/月', mm.sessionsPerUser],
+    ['リクエスト/セッション', mm.roundtripsPerSession],
+    ['LTM検索/リクエスト', mm.retrievalsPerSession],
+    ['LTMレコード/ユーザー', mm.recordsPerUser],
+  ];
+  memParams.forEach(function(row, i) { ms_s('A'+(4+i), row[0]); ms_n('B'+(4+i), row[1]); });
+  ms_s('A10', 'Strategy'); ms_s('B10', mm.useOverrideStrategy ? 'Override' : 'Default');
+
+  ms_s('A12', '【単価】');
+  ms_s('A13', 'STM イベント ($/1000)'); ms_n('B13', 0.25);
+  ms_s('A14', 'LTM ストレージ Default ($/1000/月)'); ms_n('B14', 0.75);
+  ms_s('A15', 'LTM ストレージ Override ($/1000/月)'); ms_n('B15', 0.25);
+  ms_s('A16', 'LTM 検索 ($/1000)'); ms_n('B16', 0.50);
+
+  ms_s('A18', '【ボリューム】');
+  ms_s('A19', '総セッション'); ms_n('B19', mr.totalSessions);
+  ms_s('A20', 'STM イベント数'); ms_n('B20', mr.totalEvents);
+  ms_s('A21', 'LTM 検索数'); ms_n('B21', mr.totalRetrievals);
+  ms_s('A22', 'LTM レコード数'); ms_n('B22', mr.totalRecords);
+
+  ms_s('A24', '【コスト内訳 (月額)】');
+  ms_s('A25', ''); ms_s('B25', 'USD'); ms_s('C25', 'JPY');
+  ms_s('A26', 'STM イベント'); ms_n('B26', mr.stmCost); ms_n('C26', mr.stmCost * state.exchangeRate);
+  ms_s('A27', 'LTM ストレージ'); ms_n('B27', mr.ltmStorageCost); ms_n('C27', mr.ltmStorageCost * state.exchangeRate);
+  ms_s('A28', 'LTM 検索'); ms_n('B28', mr.ltmRetrievalCost); ms_n('C28', mr.ltmRetrievalCost * state.exchangeRate);
+  ms_s('A29', '合計'); ms_n('B29', mr.totalCost); ms_n('C29', mr.totalCost * state.exchangeRate);
+  ms_s('A30', '1リクエスト単価'); ms_n('B30', mr.perRequest); ms_n('C30', mr.perRequest * state.exchangeRate);
+  ms_s('A31', 'セッション単価'); ms_n('B31', mr.perSession); ms_n('C31', mr.perSession * state.exchangeRate);
+  ms_s('A32', 'ユーザー月額'); ms_n('B32', mr.perUserMonth); ms_n('C32', mr.perUserMonth * state.exchangeRate);
+  ms_s('A33', 'ユーザー年額'); ms_n('B33', mr.perUserYear); ms_n('C33', mr.perUserYear * state.exchangeRate);
+
+  ms_s('A35', '【Override比較】');
+  ms_s('A36', ''); ms_s('B36', 'Default'); ms_s('C36', 'Override'); ms_s('D36', '削減額');
+  ms_s('A37', 'LTM ストレージ (USD)'); ms_n('B37', mr.ltmStorageCostDefault); ms_n('C37', mr.ltmStorageCostOverride); ms_n('D37', mr.ltmStorageCostDefault - mr.ltmStorageCostOverride);
+  ms_s('A38', '合計 (USD)'); ms_n('B38', mr.totalCostDefault); ms_n('C38', mr.totalCostOverride); ms_n('D38', mr.totalCostDefault - mr.totalCostOverride);
+  ms_s('A39', '削減率'); ms[('D39')] = {t:'n', v: mr.totalCostDefault > 0 ? (1 - mr.totalCostOverride / mr.totalCostDefault) : 0, z:'0.0%'};
+
+  ms['!ref'] = 'A1:D39';
+  ms['!cols'] = [{wch:32},{wch:16},{wch:16},{wch:16}];
+  XLSX.utils.book_append_sheet(wb, ms, 'AgentCore Memory');
+
   XLSX.writeFile(wb, 'cost_simulation.xlsx');
 }
 
 // \u2500\u2500 Render \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+function tabCls(tabName) {
+  return state.activeTab === tabName
+    ? 'bg-white text-slate-900 font-semibold border-slate-200'
+    : 'bg-slate-50 text-slate-400 border-transparent hover:text-slate-600';
+}
+
 function render() {
   const app = document.getElementById('app');
-  const isScenario = state.activeTab === 'scenario';
 
   // \u2500\u2500 Tab bar + header \u2500\u2500
   let html = '<header class="mb-8 border-b border-slate-200 pb-6">' +
@@ -470,12 +643,13 @@ function render() {
       '</div>' +
     '</div>' +
     '<nav class="flex gap-1">' +
-      '<button data-tab="simulator" class="px-4 py-2 text-sm rounded-t-lg border border-b-0 ' + (!isScenario ? 'bg-white text-slate-900 font-semibold border-slate-200' : 'bg-slate-50 text-slate-400 border-transparent hover:text-slate-600') + '">\u57FA\u672C\u30B7\u30DF\u30E5\u30EC\u30FC\u30BF\u30FC</button>' +
-      '<button data-tab="scenario" class="px-4 py-2 text-sm rounded-t-lg border border-b-0 ' + (isScenario ? 'bg-white text-slate-900 font-semibold border-slate-200' : 'bg-slate-50 text-slate-400 border-transparent hover:text-slate-600') + '">\u30B7\u30CA\u30EA\u30AA\u6BD4\u8F03\uFF08\u7D2F\u7A4D\u30B3\u30B9\u30C8\uFF09</button>' +
+      '<button data-tab="simulator" class="px-4 py-2 text-sm rounded-t-lg border border-b-0 ' + tabCls('simulator') + '">\u57FA\u672C\u30B7\u30DF\u30E5\u30EC\u30FC\u30BF\u30FC</button>' +
+      '<button data-tab="scenario" class="px-4 py-2 text-sm rounded-t-lg border border-b-0 ' + tabCls('scenario') + '">\u30B7\u30CA\u30EA\u30AA\u6BD4\u8F03\uFF08\u7D2F\u7A4D\u30B3\u30B9\u30C8\uFF09</button>' +
+      '<button data-tab="memory" class="px-4 py-2 text-sm rounded-t-lg border border-b-0 ' + tabCls('memory') + '">AgentCore Memory</button>' +
     '</nav>' +
   '</header>';
 
-  if (!isScenario) {
+  if (state.activeTab === 'simulator') {
     // \u2500\u2500 Simulator Tab \u2500\u2500
     const p = state.sim;
     const { results, totalReqs, totalHours } = computeResults(p);
@@ -513,7 +687,6 @@ function render() {
               if (k === 'storageCost' && r.storageCost === 0) return '<td class="px-4 py-2 text-slate-400">\u2014</td>';
               return '<td class="px-4 py-2 ' + (k === 'storageCost' && r.storageCost > 0 ? 'text-orange-600' : '') + '">&yen;' + fJ(r[k]) + '</td>';
             }).join('') + '</tr>';
-          // Show writes/day after Write row
           if (k === 'write') {
             row += '<tr class="border-t border-slate-50 bg-slate-50/50"><td class="px-4 py-1 text-[11px] text-slate-400 font-sans pl-8">\u2514 \u66F8\u8FBC\u56DE\u6570/\u65E5 (TTL)</td>' +
               results.map(r => '<td class="px-4 py-1 text-[11px] text-slate-400">' + r.writesPerDay + '\u56DE/\u65E5' + (r.isClaude ? ' (' + (p.claudeWriteType === '1h' ? '1h TTL' : '5m TTL') + ')' : r.isOpenAI ? ' (\u81EA\u52D5~5m)' : ' (\u6301\u7D9A)') + '</td>').join('') + '</tr>';
@@ -536,7 +709,7 @@ function render() {
           results.map(r => '<td class="px-4 py-2.5 font-semibold text-green-700">-' + r.savPct + '% <span class="font-normal text-green-600">(&yen;' + fJ(r.savUSD) + ')</span></td>').join('') + '</tr>' +
       '</tbody></table></div></section>';
 
-  } else {
+  } else if (state.activeTab === 'scenario') {
     // \u2500\u2500 Scenario Tab \u2500\u2500
     const sc = state.scenarios[state.activeScenario];
 
@@ -581,6 +754,140 @@ function render() {
         series.map(s => '<td class="px-4 py-1.5">&yen;' + fJ(s.daily * d) + '</td>').join('') + '</tr>';
     }
     html += '</tbody></table></div></section>';
+
+  } else if (state.activeTab === 'memory') {
+    // \u2500\u2500 Memory Tab \u2500\u2500
+    const m = state.mem;
+    const mr = computeMemoryResults(m);
+    const rate = state.exchangeRate;
+
+    // Hierarchy explainer
+    html += '<section class="mb-6">' +
+      '<div class="border border-slate-200 rounded-lg p-4 bg-slate-50/50">' +
+        '<p class="text-xs font-semibold text-slate-500 mb-2">\u7528\u8A9E\u306E\u95A2\u4FC2</p>' +
+        '<div class="font-mono text-xs text-slate-600 leading-relaxed">' +
+          '<span class="text-slate-800 font-semibold">\u30E6\u30FC\u30B6\u30FC</span> <span class="text-slate-400">\u2500\u2500</span> \u6708\u9593\u30A2\u30AF\u30C6\u30A3\u30D6\u30E6\u30FC\u30B6\u30FC\u6570<br>' +
+          '<span class="text-slate-400">\u2514\u2500</span> <span class="text-slate-800 font-semibold">\u30BB\u30C3\u30B7\u30E7\u30F3</span> <span class="text-slate-400">\u2500\u2500</span> 1\u56DE\u306E\u4F1A\u8A71 (= session_id)\u3002<span class="text-blue-600">LTM\u30B9\u30C8\u30EC\u30FC\u30B8</span>\u306F\u30E6\u30FC\u30B6\u30FC\u5358\u4F4D\u3067\u8AB2\u91D1<br>' +
+          '<span class="text-slate-400">&nbsp;&nbsp;&nbsp;\u2514\u2500</span> <span class="text-slate-800 font-semibold">\u30EA\u30AF\u30A8\u30B9\u30C8</span> <span class="text-slate-400">\u2500\u2500</span> \u30E6\u30FC\u30B6\u30FC\u767A\u8A00\u2192AI\u5FDC\u7B54\u306E1\u5F80\u5FA9\u3002<span class="text-blue-600">STM\u30A4\u30D9\u30F3\u30C8</span>\u00D7' + mr.eventsPerRT + (m.batchSize > 1 ? ' <span class="text-green-600">(batch)</span>' : '') + ' + <span class="text-blue-600">LTM\u691C\u7D22</span>\u00D7' + m.retrievalsPerSession + (m.ltmRetrievalTiming === 'first' ? ' <span class="text-green-600">(\u521D\u56DE\u306E\u307F)</span>' : '') + ' \u304C\u767A\u751F' +
+        '</div>' +
+      '</div></section>';
+
+    // Parameters
+    html += '<section class="mb-8">' +
+      '<div class="flex items-center justify-between mb-4"><h2 class="text-xs font-semibold text-slate-400 uppercase tracking-wider">\u30D1\u30E9\u30E1\u30FC\u30BF\u8A2D\u5B9A</h2>' +
+      '<button onclick="downloadExcel()" class="px-3 py-1.5 text-xs font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">Excel \u30C0\u30A6\u30F3\u30ED\u30FC\u30C9</button></div>' +
+      memoryParamGrid(m) +
+      '<div class="flex items-center gap-3 mt-3">' +
+        '<span class="text-xs text-slate-400">LTM Strategy: <span class="tip"><svg class="inline w-3.5 h-3.5 -mt-0.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="1.5"/><path stroke-width="1.5" d="M9.5 9.5a2.5 2.5 0 0 1 4.99.5c0 1.5-2.49 2-2.49 3M12 17h.01"/></svg><span class="tip-text" style="white-space:normal;width:280px;">Default: AWS\u304C\u62BD\u51FA\u30FB\u7D71\u5408\u3092\u5168\u81EA\u52D5\u3067\u5B9F\u884C ($0.75/1K\u30EC\u30B3\u30FC\u30C9/\u6708)<br>Override: \u62BD\u51FA\u30D7\u30ED\u30F3\u30D7\u30C8\u3092\u30AB\u30B9\u30BF\u30E0\u3057\u3066\u7CBE\u5EA6\u5411\u4E0A ($0.25/1K\u30EC\u30B3\u30FC\u30C9/\u6708\u3001\u5358\u4FA167%\u524A\u6E1B)</span></span></span>' +
+        '<button data-mem-strategy="default" class="px-3 py-1 text-xs rounded-md border ' + (!m.useOverrideStrategy ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">Default</button>' +
+        '<button data-mem-strategy="override" class="px-3 py-1 text-xs rounded-md border ' + (m.useOverrideStrategy ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">Override</button>' +
+      '</div>' +
+      '<div class="flex flex-wrap items-center gap-x-6 gap-y-2 mt-3">' +
+        '<div class="flex items-center gap-2">' +
+          '<span class="text-xs text-slate-400">STM batch_size: <span class="tip"><svg class="inline w-3.5 h-3.5 -mt-0.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="1.5"/><path stroke-width="1.5" d="M9.5 9.5a2.5 2.5 0 0 1 4.99.5c0 1.5-2.49 2-2.49 3M12 17h.01"/></svg><span class="tip-text" style="white-space:normal;width:280px;">1: user/assistant\u3092\u500B\u5225\u9001\u4FE1 (2\u30A4\u30D9\u30F3\u30C8/RT)<br>2: user+assistant\u3092\u307E\u3068\u3081\u3066\u9001\u4FE1 (1\u30A4\u30D9\u30F3\u30C8/RT\u3001STM\u30B3\u30B9\u30C8\u534A\u6E1B)<br>Strands: SessionManager(batch_size=N)</span></span></span>' +
+          '<button data-mem-batch="1" class="px-3 py-1 text-xs rounded-md border ' + (m.batchSize === 1 ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">1</button>' +
+          '<button data-mem-batch="2" class="px-3 py-1 text-xs rounded-md border ' + (m.batchSize === 2 ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">2</button>' +
+        '</div>' +
+        '<div class="flex items-center gap-2">' +
+          '<span class="text-xs text-slate-400">LTM\u691C\u7D22\u30BF\u30A4\u30DF\u30F3\u30B0: <span class="tip"><svg class="inline w-3.5 h-3.5 -mt-0.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="1.5"/><path stroke-width="1.5" d="M9.5 9.5a2.5 2.5 0 0 1 4.99.5c0 1.5-2.49 2-2.49 3M12 17h.01"/></svg><span class="tip-text" style="white-space:normal;width:280px;">\u6BCE\u30EA\u30AF\u30A8\u30B9\u30C8: \u5168\u30EA\u30AF\u30A8\u30B9\u30C8\u3067LTM\u691C\u7D22\u3092\u5B9F\u884C\u3002\u6700\u65B0\u306E\u8A18\u61B6\u3092\u5E38\u306B\u53C2\u7167\u3067\u304D\u308B<br>\u521D\u56DE\u306E\u307F: \u30BB\u30C3\u30B7\u30E7\u30F3\u6700\u521D\u306E\u30EA\u30AF\u30A8\u30B9\u30C8\u306E\u307FLTM\u691C\u7D22\u3002\u691C\u7D22\u30B3\u30B9\u30C8\u3092\u524A\u6E1B\u3067\u304D\u308B\u304C\u3001\u4F1A\u8A71\u4E2D\u306E\u30B3\u30F3\u30C6\u30AD\u30B9\u30C8\u66F4\u65B0\u304C\u306A\u3044</span></span></span>' +
+          '<button data-mem-retrieval="every" class="px-3 py-1 text-xs rounded-md border ' + (m.ltmRetrievalTiming === 'every' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">\u6BCE\u30EA\u30AF\u30A8\u30B9\u30C8</button>' +
+          '<button data-mem-retrieval="first" class="px-3 py-1 text-xs rounded-md border ' + (m.ltmRetrievalTiming === 'first' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">\u521D\u56DE\u306E\u307F</button>' +
+        '</div>' +
+      '</div>' +
+    '</section>';
+
+    // Unit price table
+    html += '<section class="mb-8"><h2 class="text-sm font-semibold text-slate-700 mb-3">AgentCore Memory \u5358\u4FA1</h2>' +
+      '<div class="overflow-x-auto border border-slate-200 rounded-lg"><table class="w-full text-sm">' +
+      '<thead><tr class="bg-slate-50"><th class="px-4 py-2.5 text-xs text-slate-500 text-left">\u30B5\u30FC\u30D3\u30B9</th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">\u5358\u4FA1 (USD)</th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">\u5358\u4FA1 (JPY)</th><th class="px-4 py-2.5 text-xs text-slate-500 text-left">\u5358\u4F4D</th></tr></thead>' +
+      '<tbody class="font-mono text-xs">' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">STM \u30A4\u30D9\u30F3\u30C8</td><td class="px-4 py-2 text-right">$0.25</td><td class="px-4 py-2 text-right">&yen;' + (0.25 * rate).toFixed(1) + '</td><td class="px-4 py-2 text-slate-400 font-sans">/1,000 events</td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans"><span class="tip">LTM \u30B9\u30C8\u30EC\u30FC\u30B8 (Default)<span class="tip-text" style="white-space:normal;width:260px;">AWS\u304C\u62BD\u51FA\u30FB\u7D71\u5408\u3092\u5168\u81EA\u52D5\u3067\u5B9F\u884C\u3002\u8A2D\u5B9A\u4E0D\u8981\u3067\u7C21\u5358\u3060\u304C\u5358\u4FA1\u304C\u9AD8\u3044</span></span></td><td class="px-4 py-2 text-right">$0.75</td><td class="px-4 py-2 text-right">&yen;' + (0.75 * rate).toFixed(1) + '</td><td class="px-4 py-2 text-slate-400 font-sans">/1,000 records/\u6708</td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans"><span class="tip">LTM \u30B9\u30C8\u30EC\u30FC\u30B8 (Override)<span class="tip-text" style="white-space:normal;width:260px;">\u62BD\u51FA\u30D7\u30ED\u30F3\u30D7\u30C8\u3092\u30AB\u30B9\u30BF\u30E0\u3057\u3066\u7CBE\u5EA6\u5411\u4E0A\u3002\u5358\u4FA167%\u524A\u6E1B\u3060\u304C\u8A2D\u5B9A\u306B\u624B\u9593\u304C\u304B\u304B\u308B</span></span></td><td class="px-4 py-2 text-right">$0.25</td><td class="px-4 py-2 text-right">&yen;' + (0.25 * rate).toFixed(1) + '</td><td class="px-4 py-2 text-slate-400 font-sans">/1,000 records/\u6708</td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">LTM \u691C\u7D22</td><td class="px-4 py-2 text-right">$0.50</td><td class="px-4 py-2 text-right">&yen;' + (0.50 * rate).toFixed(1) + '</td><td class="px-4 py-2 text-slate-400 font-sans">/1,000 requests</td></tr>' +
+      '</tbody></table></div>' +
+      '<p class="mt-2 text-[11px] text-slate-400"><a href="https://aws.amazon.com/bedrock/agentcore/pricing/" target="_blank" class="text-blue-500 hover:underline">AWS AgentCore Pricing \u2197</a></p></section>';
+
+    // Volume cards
+    html += '<section class="mb-8"><h2 class="text-sm font-semibold text-slate-700 mb-3">\u6708\u9593\u30DC\u30EA\u30E5\u30FC\u30E0</h2>' +
+      '<div class="grid grid-cols-2 lg:grid-cols-5 gap-3">' +
+        [
+          ['\u7DCF\u30EA\u30AF\u30A8\u30B9\u30C8', mr.totalRoundtrips.toLocaleString(), m.userCount.toLocaleString() + ' \u00D7 ' + m.sessionsPerUser + ' \u00D7 ' + m.roundtripsPerSession],
+          ['\u7DCF\u30BB\u30C3\u30B7\u30E7\u30F3', mr.totalSessions.toLocaleString(), m.userCount.toLocaleString() + ' \u00D7 ' + m.sessionsPerUser],
+          ['STM \u30A4\u30D9\u30F3\u30C8', mr.totalEvents.toLocaleString(), mr.totalRoundtrips.toLocaleString() + ' \u00D7 ' + mr.eventsPerRT + (m.batchSize > 1 ? ' (batch=' + m.batchSize + ')' : '')],
+          ['LTM \u691C\u7D22', mr.totalRetrievals.toLocaleString(), (m.ltmRetrievalTiming === 'first' ? mr.totalSessions.toLocaleString() : mr.totalRoundtrips.toLocaleString()) + ' \u00D7 ' + m.retrievalsPerSession + (m.ltmRetrievalTiming === 'first' ? ' (\u521D\u56DE\u306E\u307F)' : '')],
+          ['LTM \u30EC\u30B3\u30FC\u30C9', mr.totalRecords.toLocaleString(), m.userCount.toLocaleString() + ' \u00D7 ' + m.recordsPerUser],
+        ].map(([label, val, formula]) =>
+          '<div class="border border-slate-200 rounded-lg p-3 text-center">' +
+            '<p class="text-[11px] text-slate-400">' + label + '</p>' +
+            '<p class="text-lg font-semibold text-slate-800 font-mono">' + val + '</p>' +
+            '<p class="text-[10px] text-slate-400 mt-1 font-mono">' + formula + '</p></div>'
+        ).join('') +
+      '</div></section>';
+
+    // Cost breakdown
+    html += '<section class="mb-8"><h2 class="text-sm font-semibold text-slate-700 mb-3">\u30B3\u30B9\u30C8\u5185\u8A33 (\u6708\u984D)</h2>' +
+      '<div class="overflow-x-auto border border-slate-200 rounded-lg"><table class="w-full text-sm">' +
+      '<thead><tr class="bg-slate-50"><th class="px-4 py-2.5 text-xs text-slate-500 text-left">\u8CBB\u76EE</th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">USD</th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">JPY</th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">\u5272\u5408</th></tr></thead>' +
+      '<tbody class="font-mono text-xs">' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">STM \u30A4\u30D9\u30F3\u30C8</td><td class="px-4 py-2 text-right">$' + fU(mr.stmCost) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.stmCost) + '</td><td class="px-4 py-2 text-right text-slate-400">' + (mr.totalCost > 0 ? (mr.stmCost / mr.totalCost * 100).toFixed(1) : '0') + '%</td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">LTM \u30B9\u30C8\u30EC\u30FC\u30B8' + (m.useOverrideStrategy ? ' (Override)' : ' (Default)') + '</td><td class="px-4 py-2 text-right">$' + fU(mr.ltmStorageCost) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.ltmStorageCost) + '</td><td class="px-4 py-2 text-right text-slate-400">' + (mr.totalCost > 0 ? (mr.ltmStorageCost / mr.totalCost * 100).toFixed(1) : '0') + '%</td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">LTM \u691C\u7D22</td><td class="px-4 py-2 text-right">$' + fU(mr.ltmRetrievalCost) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.ltmRetrievalCost) + '</td><td class="px-4 py-2 text-right text-slate-400">' + (mr.totalCost > 0 ? (mr.ltmRetrievalCost / mr.totalCost * 100).toFixed(1) : '0') + '%</td></tr>' +
+        '<tr class="border-t-2 border-slate-300 bg-slate-50 font-semibold"><td class="px-4 py-3 font-sans text-slate-700">\u5408\u8A08</td><td class="px-4 py-3 text-right">$' + fU(mr.totalCost) + '</td><td class="px-4 py-3 text-right">&yen;' + fJ(mr.totalCost) + '</td><td class="px-4 py-3 text-right">100%</td></tr>' +
+        '<tr class="border-t border-slate-200"><td class="px-4 py-2 font-sans text-slate-500">1\u30EA\u30AF\u30A8\u30B9\u30C8\u5358\u4FA1</td><td class="px-4 py-2 text-right">$' + mr.perRequest.toFixed(5) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ2(mr.perRequest) + '</td><td></td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 font-sans text-slate-500">\u30BB\u30C3\u30B7\u30E7\u30F3\u5358\u4FA1</td><td class="px-4 py-2 text-right">$' + mr.perSession.toFixed(4) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ2(mr.perSession) + '</td><td></td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 font-sans text-slate-500">\u30E6\u30FC\u30B6\u30FC\u6708\u984D</td><td class="px-4 py-2 text-right">$' + mr.perUserMonth.toFixed(4) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ2(mr.perUserMonth) + '</td><td></td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-2 font-sans text-slate-500">\u30E6\u30FC\u30B6\u30FC\u5E74\u984D</td><td class="px-4 py-2 text-right">$' + mr.perUserYear.toFixed(4) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ2(mr.perUserYear) + '</td><td></td></tr>' +
+      '</tbody></table></div></section>';
+
+    // Donut chart + Override comparison
+    html += '<section class="mb-8"><div class="grid grid-cols-1 lg:grid-cols-2 gap-8">' +
+      '<div><h2 class="text-sm font-semibold text-slate-700 mb-3">\u30B3\u30B9\u30C8\u69CB\u6210</h2>' +
+        buildPieChart([
+          { label: 'STM \u30A4\u30D9\u30F3\u30C8', value: mr.stmCost, color: '#3B82F6' },
+          { label: 'LTM \u30B9\u30C8\u30EC\u30FC\u30B8', value: mr.ltmStorageCost, color: '#8B5CF6' },
+          { label: 'LTM \u691C\u7D22', value: mr.ltmRetrievalCost, color: '#10B981' },
+        ]) +
+      '</div>' +
+      '<div><h2 class="text-sm font-semibold text-slate-700 mb-3">Override Strategy \u6BD4\u8F03</h2>' +
+        '<div class="border border-slate-200 rounded-lg overflow-hidden"><table class="w-full text-sm">' +
+        '<thead><tr class="bg-slate-50"><th class="px-4 py-2.5 text-xs text-slate-500 text-left"></th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">Default</th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">Override</th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">\u524A\u6E1B\u984D</th></tr></thead>' +
+        '<tbody class="font-mono text-xs">' +
+          '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">LTM \u30B9\u30C8\u30EC\u30FC\u30B8</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.ltmStorageCostDefault) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.ltmStorageCostOverride) + '</td><td class="px-4 py-2 text-right text-green-600">&yen;' + fJ(mr.ltmStorageCostDefault - mr.ltmStorageCostOverride) + '</td></tr>' +
+          '<tr class="border-t border-slate-200 bg-slate-50 font-semibold"><td class="px-4 py-2 font-sans text-slate-700">\u5408\u8A08</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.totalCostDefault) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.totalCostOverride) + '</td><td class="px-4 py-2 text-right text-green-600">&yen;' + fJ(mr.totalCostDefault - mr.totalCostOverride) + '</td></tr>' +
+          '<tr class="border-t border-slate-200"><td class="px-4 py-2 font-sans text-slate-500">\u524A\u6E1B\u7387</td><td></td><td></td><td class="px-4 py-2 text-right text-green-600 font-semibold">' + (mr.totalCostDefault > 0 ? ((1 - mr.totalCostOverride / mr.totalCostDefault) * 100).toFixed(1) : '0') + '%</td></tr>' +
+        '</tbody></table></div>' +
+      '</div></div></section>';
+
+    // Preset comparison table
+    const presetResults = memoryPresets.map(p => ({ preset: p, result: computeMemoryResults(p) }));
+    html += '<section class="mb-8"><h2 class="text-sm font-semibold text-slate-700 mb-3">規模別シミュレーション比較</h2>' +
+      '<div class="overflow-x-auto border border-slate-200 rounded-lg"><table class="w-full text-sm">' +
+      '<thead><tr class="bg-slate-50"><th class="px-4 py-2.5 text-xs text-slate-500 text-left">項目</th>' +
+      presetResults.map(pr => '<th class="px-4 py-2.5 text-xs text-slate-500 text-right">' + pr.preset.name + '<br><span class="font-normal text-slate-400">' + pr.preset.desc + '</span></th>').join('') +
+      '</tr></thead>' +
+      '<tbody class="text-xs">' +
+        '<tr class="border-t border-slate-100 bg-slate-50/50"><td colspan="' + (presetResults.length + 1) + '" class="px-4 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">パラメータ</td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">ユーザー数</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.preset.userCount.toLocaleString() + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">セッション/ユーザー</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.preset.sessionsPerUser + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">リクエスト/セッション</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.preset.roundtripsPerSession + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTM検索/リクエスト</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.preset.retrievalsPerSession + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTMレコード/ユーザー</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.preset.recordsPerUser + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100 bg-slate-50/50"><td colspan="' + (presetResults.length + 1) + '" class="px-4 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">月間ボリューム</td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">総リクエスト</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.result.totalRoundtrips.toLocaleString() + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">STMイベント</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.result.totalEvents.toLocaleString() + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTM検索</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.result.totalRetrievals.toLocaleString() + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100 bg-slate-50/50"><td colspan="' + (presetResults.length + 1) + '" class="px-4 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">月額コスト (Default Strategy)</td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">STMイベント</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ(pr.result.stmCost) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTMストレージ</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ(pr.result.ltmStorageCostDefault) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTM検索</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ(pr.result.ltmRetrievalCost) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t-2 border-slate-300 bg-slate-50 font-semibold"><td class="px-4 py-2 text-slate-700">合計 (Default)</td>' + presetResults.map(pr => '<td class="px-4 py-2 text-right font-mono">&yen;' + fJ(pr.result.totalCostDefault) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-200 bg-green-50 font-semibold"><td class="px-4 py-2 text-green-700">合計 (Override)</td>' + presetResults.map(pr => '<td class="px-4 py-2 text-right font-mono text-green-700">&yen;' + fJ(pr.result.totalCostOverride) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100 bg-slate-50/50"><td colspan="' + (presetResults.length + 1) + '" class="px-4 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">単価 (Default Strategy)</td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">1リクエスト単価</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ2(pr.result.perRequest) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">ユーザー月額</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ2(pr.result.perUserMonth) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">ユーザー年額</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ2(pr.result.perUserYear) + '</td>').join('') + '</tr>' +
+      '</tbody></table></div></section>';
   }
 
   // Footer
@@ -603,9 +910,10 @@ function render() {
   app.querySelectorAll('input[data-prefix]').forEach(el => {
     el.addEventListener('input', (e) => {
       if (e.target.value === '' || isNaN(Number(e.target.value))) return;
-      const target = e.target.dataset.prefix === 'sim' ? state.sim : state.scenarios[state.activeScenario];
+      const pfx = e.target.dataset.prefix;
+      const target = pfx === 'sim' ? state.sim : pfx === 'mem' ? state.mem : state.scenarios[state.activeScenario];
       target[e.target.dataset.key] = Number(e.target.value);
-      debouncedRender(e.target.dataset.key, e.target.dataset.prefix);
+      debouncedRender(e.target.dataset.key, pfx);
     });
   });
   // Option buttons
@@ -626,6 +934,27 @@ function render() {
   // Scenario buttons
   app.querySelectorAll('button[data-scenario]').forEach(el => {
     el.addEventListener('click', () => { state.activeScenario = Number(el.dataset.scenario); render(); });
+  });
+  // Memory strategy buttons
+  app.querySelectorAll('button[data-mem-strategy]').forEach(el => {
+    el.addEventListener('click', () => {
+      state.mem.useOverrideStrategy = el.dataset.memStrategy === 'override';
+      render();
+    });
+  });
+  // Memory batch size buttons
+  app.querySelectorAll('button[data-mem-batch]').forEach(el => {
+    el.addEventListener('click', () => {
+      state.mem.batchSize = Number(el.dataset.memBatch);
+      render();
+    });
+  });
+  // Memory retrieval timing buttons
+  app.querySelectorAll('button[data-mem-retrieval]').forEach(el => {
+    el.addEventListener('click', () => {
+      state.mem.ltmRetrievalTiming = el.dataset.memRetrieval;
+      render();
+    });
   });
 }
 
