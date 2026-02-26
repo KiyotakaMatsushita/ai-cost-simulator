@@ -99,7 +99,7 @@ const state = {
     roundtripsPerSession: 2,
     retrievalsPerSession: 1,
     recordsPerUser: 10,
-    batchSize: 1,
+    stmEventsPerRequest: 2,
     ltmRetrievalTiming: 'every',
     useOverrideStrategy: false,
   },
@@ -190,7 +190,7 @@ function computeTimeSeries(p) {
 function computeMemoryResults(m) {
   const totalSessions = m.userCount * m.sessionsPerUser;
   const totalRoundtrips = totalSessions * m.roundtripsPerSession;
-  const eventsPerRT = Math.ceil(2 / (m.batchSize || 1));
+  const eventsPerRT = m.stmEventsPerRequest || 2;
   const totalEvents = totalRoundtrips * eventsPerRT;
   const totalRetrievals = m.ltmRetrievalTiming === 'first'
     ? totalSessions * m.retrievalsPerSession
@@ -330,7 +330,8 @@ function memoryParamGrid(m) {
   const fields = [
     ['\u30E6\u30FC\u30B6\u30FC\u6570', 'userCount', '\u6708\u9593\u30A2\u30AF\u30C6\u30A3\u30D6\u30E6\u30FC\u30B6\u30FC\u6570'],
     ['\u30BB\u30C3\u30B7\u30E7\u30F3/\u30E6\u30FC\u30B6\u30FC/\u6708', 'sessionsPerUser', '1\u30E6\u30FC\u30B6\u30FC\u304C\u6708\u306B\u958B\u59CB\u3059\u308B\u4F1A\u8A71\u306E\u56DE\u6570\u3002\u30BB\u30C3\u30B7\u30E7\u30F3 = 1\u56DE\u306E\u4F1A\u8A71 (session_id)'],
-    ['\u30EA\u30AF\u30A8\u30B9\u30C8/\u30BB\u30C3\u30B7\u30E7\u30F3', 'roundtripsPerSession', '1\u4F1A\u8A71\u5185\u306E\u5F80\u5FA9\u56DE\u6570\u3002\u30E6\u30FC\u30B6\u30FC\u767A\u8A00\u2192AI\u5FDC\u7B54 = 1\u30EA\u30AF\u30A8\u30B9\u30C8\u3002\u5404\u30EA\u30AF\u30A8\u30B9\u30C8\u3067STM\u30A4\u30D9\u30F3\u30C8\u00D72\u304C\u767A\u751F'],
+    ['\u30EA\u30AF\u30A8\u30B9\u30C8/\u30BB\u30C3\u30B7\u30E7\u30F3', 'roundtripsPerSession', '1\u4F1A\u8A71\u5185\u306E\u5F80\u5FA9\u56DE\u6570\u3002\u30E6\u30FC\u30B6\u30FC\u767A\u8A00\u2192AI\u5FDC\u7B54 = 1\u30EA\u30AF\u30A8\u30B9\u30C8'],
+    ['STM\u30A4\u30D9\u30F3\u30C8/\u30EA\u30AF\u30A8\u30B9\u30C8', 'stmEventsPerRequest', 'batch_size=1: 2 (user+assistant\u500B\u5225\u9001\u4FE1), batch_size=2: 1 (\u307E\u3068\u3081\u3066\u9001\u4FE1)'],
     ['LTM\u691C\u7D22/\u30EA\u30AF\u30A8\u30B9\u30C8', 'retrievalsPerSession', '\u30EA\u30AF\u30A8\u30B9\u30C8\u3054\u3068\u306BLTM\u304B\u3089\u904E\u53BB\u306E\u8A18\u61B6\u3092\u691C\u7D22\u3059\u308B\u56DE\u6570\u3002\u901A\u5E381\u56DE'],
     ['LTM\u30EC\u30B3\u30FC\u30C9/\u30E6\u30FC\u30B6\u30FC', 'recordsPerUser', '\u30E6\u30FC\u30B6\u30FC\u3054\u3068\u306B\u84C4\u7A4D\u3055\u308C\u308BLTM\u30EC\u30B3\u30FC\u30C9\u6570\uFF08\u597D\u307F\u30FB\u4E8B\u5B9F\u7B49\uFF09'],
   ];
@@ -495,52 +496,68 @@ function downloadExcel() {
   var ms = {};
   function ms_s(a,v) { ms[a] = {t:'s', v:String(v)}; }
   function ms_n(a,v) { ms[a] = {t:'n', v:Number(v)}; }
-  var mr = computeMemoryResults(state.mem);
+  function ms_f(a,formula) { ms[a] = {t:'n', f:formula}; }
   var mm = state.mem;
+  var isFirstOnly = mm.ltmRetrievalTiming === 'first';
   ms_s('A1', 'AgentCore Memory コストシミュレーション');
 
+  // B4:B11 — Parameters
   ms_s('A3', '【パラメーター】');
   var memParams = [
-    ['為替レート (¥/$)', state.exchangeRate],
-    ['ユーザー数', mm.userCount],
-    ['セッション/ユーザー/月', mm.sessionsPerUser],
-    ['リクエスト/セッション', mm.roundtripsPerSession],
-    ['LTM検索/リクエスト', mm.retrievalsPerSession],
-    ['LTMレコード/ユーザー', mm.recordsPerUser],
+    ['為替レート (¥/$)', state.exchangeRate],        // B4
+    ['ユーザー数', mm.userCount],                     // B5
+    ['セッション/ユーザー/月', mm.sessionsPerUser],   // B6
+    ['リクエスト/セッション', mm.roundtripsPerSession],// B7
+    ['LTM検索/リクエスト', mm.retrievalsPerSession],  // B8
+    ['LTMレコード/ユーザー', mm.recordsPerUser],      // B9
+    ['STMイベント/リクエスト', mm.stmEventsPerRequest || 2], // B10
+    ['LTM検索タイミング (1=初回のみ)', isFirstOnly ? 1 : 0], // B11
   ];
   memParams.forEach(function(row, i) { ms_s('A'+(4+i), row[0]); ms_n('B'+(4+i), row[1]); });
-  ms_s('A10', 'Strategy'); ms_s('B10', mm.useOverrideStrategy ? 'Override' : 'Default');
+  ms_s('A12', 'Strategy'); ms_s('B12', mm.useOverrideStrategy ? 'Override' : 'Default');
 
-  ms_s('A12', '【単価】');
-  ms_s('A13', 'STM イベント ($/1000)'); ms_n('B13', 0.25);
-  ms_s('A14', 'LTM ストレージ Default ($/1000/月)'); ms_n('B14', 0.75);
-  ms_s('A15', 'LTM ストレージ Override ($/1000/月)'); ms_n('B15', 0.25);
-  ms_s('A16', 'LTM 検索 ($/1000)'); ms_n('B16', 0.50);
+  // B15:B18 — Unit prices (per 1000)
+  ms_s('A14', '【単価 ($/1000)】');
+  ms_s('A15', 'STM イベント');              ms_n('B15', 0.25);  // B15
+  ms_s('A16', 'LTM ストレージ Default');    ms_n('B16', 0.75);  // B16
+  ms_s('A17', 'LTM ストレージ Override');   ms_n('B17', 0.25);  // B17
+  ms_s('A18', 'LTM 検索');                  ms_n('B18', 0.50);  // B18
 
-  ms_s('A18', '【ボリューム】');
-  ms_s('A19', '総セッション'); ms_n('B19', mr.totalSessions);
-  ms_s('A20', 'STM イベント数'); ms_n('B20', mr.totalEvents);
-  ms_s('A21', 'LTM 検索数'); ms_n('B21', mr.totalRetrievals);
-  ms_s('A22', 'LTM レコード数'); ms_n('B22', mr.totalRecords);
+  // B20:B24 — Volumes (formulas)
+  ms_s('A20', '【ボリューム】');
+  ms_s('A21', '総セッション');      ms_f('B21', 'B5*B6');                                // userCount * sessionsPerUser
+  ms_s('A22', '総リクエスト');      ms_f('B22', 'B21*B7');                                // totalSessions * roundtripsPerSession
+  ms_s('A23', 'STM イベント数');    ms_f('B23', 'B22*B10');                                // totalRoundtrips * stmEventsPerRequest
+  ms_s('A24', 'LTM 検索数');       ms_f('B24', 'IF(B11=1,B21*B8,B22*B8)');              // first: sessions*ret, every: roundtrips*ret
+  ms_s('A25', 'LTM レコード数');    ms_f('B25', 'B5*B9');                                // userCount * recordsPerUser
 
-  ms_s('A24', '【コスト内訳 (月額)】');
-  ms_s('A25', ''); ms_s('B25', 'USD'); ms_s('C25', 'JPY');
-  ms_s('A26', 'STM イベント'); ms_n('B26', mr.stmCost); ms_n('C26', mr.stmCost * state.exchangeRate);
-  ms_s('A27', 'LTM ストレージ'); ms_n('B27', mr.ltmStorageCost); ms_n('C27', mr.ltmStorageCost * state.exchangeRate);
-  ms_s('A28', 'LTM 検索'); ms_n('B28', mr.ltmRetrievalCost); ms_n('C28', mr.ltmRetrievalCost * state.exchangeRate);
-  ms_s('A29', '合計'); ms_n('B29', mr.totalCost); ms_n('C29', mr.totalCost * state.exchangeRate);
-  ms_s('A30', '1リクエスト単価'); ms_n('B30', mr.perRequest); ms_n('C30', mr.perRequest * state.exchangeRate);
-  ms_s('A31', 'セッション単価'); ms_n('B31', mr.perSession); ms_n('C31', mr.perSession * state.exchangeRate);
-  ms_s('A32', 'ユーザー月額'); ms_n('B32', mr.perUserMonth); ms_n('C32', mr.perUserMonth * state.exchangeRate);
-  ms_s('A33', 'ユーザー年額'); ms_n('B33', mr.perUserYear); ms_n('C33', mr.perUserYear * state.exchangeRate);
+  // B27:C36 — Cost breakdown (formulas)
+  ms_s('A27', '【コスト内訳 (月額)】');
+  ms_s('A28', ''); ms_s('B28', 'USD'); ms_s('C28', 'JPY');
+  ms_s('A29', 'STM イベント');      ms_f('B29', 'B23*B15/1000');          ms_f('C29', 'B29*B4');
+  ms_s('A30', 'LTM ストレージ');    ms_f('B30', 'IF(B12="Override",B25*B17/1000,B25*B16/1000)'); ms_f('C30', 'B30*B4');
+  ms_s('A31', 'LTM 検索');         ms_f('B31', 'B24*B18/1000');          ms_f('C31', 'B31*B4');
+  ms_s('A32', '合計');             ms_f('B32', 'B29+B30+B31');           ms_f('C32', 'B32*B4');
+  ms_s('A33', '1リクエスト単価');   ms_f('B33', 'IF(B22>0,B32/B22,0)');   ms_f('C33', 'B33*B4');
+  ms_s('A34', 'セッション単価');    ms_f('B34', 'IF(B21>0,B32/B21,0)');   ms_f('C34', 'B34*B4');
+  ms_s('A35', 'ユーザー月額');      ms_f('B35', 'IF(B5>0,B32/B5,0)');     ms_f('C35', 'B35*B4');
+  ms_s('A36', 'ユーザー年額');      ms_f('B36', 'B35*12');                ms_f('C36', 'B36*B4');
 
-  ms_s('A35', '【Override比較】');
-  ms_s('A36', ''); ms_s('B36', 'Default'); ms_s('C36', 'Override'); ms_s('D36', '削減額');
-  ms_s('A37', 'LTM ストレージ (USD)'); ms_n('B37', mr.ltmStorageCostDefault); ms_n('C37', mr.ltmStorageCostOverride); ms_n('D37', mr.ltmStorageCostDefault - mr.ltmStorageCostOverride);
-  ms_s('A38', '合計 (USD)'); ms_n('B38', mr.totalCostDefault); ms_n('C38', mr.totalCostOverride); ms_n('D38', mr.totalCostDefault - mr.totalCostOverride);
-  ms_s('A39', '削減率'); ms[('D39')] = {t:'n', v: mr.totalCostDefault > 0 ? (1 - mr.totalCostOverride / mr.totalCostDefault) : 0, z:'0.0%'};
+  // B38:D42 — Override comparison (formulas)
+  ms_s('A38', '【Override比較】');
+  ms_s('A39', ''); ms_s('B39', 'Default'); ms_s('C39', 'Override'); ms_s('D39', '削減額');
+  ms_s('A40', 'LTM ストレージ (USD)');
+  ms_f('B40', 'B25*B16/1000');                        // Default storage cost
+  ms_f('C40', 'B25*B17/1000');                        // Override storage cost
+  ms_f('D40', 'B40-C40');                             // Savings
+  ms_s('A41', '合計 (USD)');
+  ms_f('B41', 'B29+B40+B31');                         // Default total
+  ms_f('C41', 'B29+C40+B31');                         // Override total
+  ms_f('D41', 'B41-C41');                             // Savings
+  ms_s('A42', '削減率');
+  ms['D42'] = {t:'n', f:'IF(B41>0,(B41-C41)/B41,0)', z:'0.0%'};
 
-  ms['!ref'] = 'A1:D39';
+  ms['!ref'] = 'A1:D42';
   ms['!cols'] = [{wch:32},{wch:16},{wch:16},{wch:16}];
   XLSX.utils.book_append_sheet(wb, ms, 'AgentCore Memory');
 
@@ -696,7 +713,7 @@ function render() {
         '<div class="font-mono text-xs text-slate-600 leading-relaxed">' +
           '<span class="text-slate-800 font-semibold">\u30E6\u30FC\u30B6\u30FC</span> <span class="text-slate-400">\u2500\u2500</span> \u6708\u9593\u30A2\u30AF\u30C6\u30A3\u30D6\u30E6\u30FC\u30B6\u30FC\u6570<br>' +
           '<span class="text-slate-400">\u2514\u2500</span> <span class="text-slate-800 font-semibold">\u30BB\u30C3\u30B7\u30E7\u30F3</span> <span class="text-slate-400">\u2500\u2500</span> 1\u56DE\u306E\u4F1A\u8A71 (= session_id)\u3002<span class="text-blue-600">LTM\u30B9\u30C8\u30EC\u30FC\u30B8</span>\u306F\u30E6\u30FC\u30B6\u30FC\u5358\u4F4D\u3067\u8AB2\u91D1<br>' +
-          '<span class="text-slate-400">&nbsp;&nbsp;&nbsp;\u2514\u2500</span> <span class="text-slate-800 font-semibold">\u30EA\u30AF\u30A8\u30B9\u30C8</span> <span class="text-slate-400">\u2500\u2500</span> \u30E6\u30FC\u30B6\u30FC\u767A\u8A00\u2192AI\u5FDC\u7B54\u306E1\u5F80\u5FA9\u3002<span class="text-blue-600">STM\u30A4\u30D9\u30F3\u30C8</span>\u00D7' + mr.eventsPerRT + (m.batchSize > 1 ? ' <span class="text-green-600">(batch)</span>' : '') + ' + <span class="text-blue-600">LTM\u691C\u7D22</span>\u00D7' + m.retrievalsPerSession + (m.ltmRetrievalTiming === 'first' ? ' <span class="text-green-600">(\u521D\u56DE\u306E\u307F)</span>' : '') + ' \u304C\u767A\u751F' +
+          '<span class="text-slate-400">&nbsp;&nbsp;&nbsp;\u2514\u2500</span> <span class="text-slate-800 font-semibold">\u30EA\u30AF\u30A8\u30B9\u30C8</span> <span class="text-slate-400">\u2500\u2500</span> \u30E6\u30FC\u30B6\u30FC\u767A\u8A00\u2192AI\u5FDC\u7B54\u306E1\u5F80\u5FA9\u3002<span class="text-blue-600">STM\u30A4\u30D9\u30F3\u30C8</span>\u00D7' + mr.eventsPerRT + ' + <span class="text-blue-600">LTM\u691C\u7D22</span>\u00D7' + m.retrievalsPerSession + (m.ltmRetrievalTiming === 'first' ? ' <span class="text-green-600">(\u521D\u56DE\u306E\u307F)</span>' : '') + ' \u304C\u767A\u751F' +
         '</div>' +
       '</div></section>';
 
@@ -711,11 +728,6 @@ function render() {
         '<button data-mem-strategy="override" class="px-3 py-1 text-xs rounded-md border ' + (m.useOverrideStrategy ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">Override</button>' +
       '</div>' +
       '<div class="flex flex-wrap items-center gap-x-6 gap-y-2 mt-3">' +
-        '<div class="flex items-center gap-2">' +
-          '<span class="text-xs text-slate-400">STM batch_size: <span class="tip"><svg class="inline w-3.5 h-3.5 -mt-0.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="1.5"/><path stroke-width="1.5" d="M9.5 9.5a2.5 2.5 0 0 1 4.99.5c0 1.5-2.49 2-2.49 3M12 17h.01"/></svg><span class="tip-text" style="white-space:normal;width:280px;">1: user/assistant\u3092\u500B\u5225\u9001\u4FE1 (2\u30A4\u30D9\u30F3\u30C8/RT)<br>2: user+assistant\u3092\u307E\u3068\u3081\u3066\u9001\u4FE1 (1\u30A4\u30D9\u30F3\u30C8/RT\u3001STM\u30B3\u30B9\u30C8\u534A\u6E1B)<br>Strands: SessionManager(batch_size=N)</span></span></span>' +
-          '<button data-mem-batch="1" class="px-3 py-1 text-xs rounded-md border ' + (m.batchSize === 1 ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">1</button>' +
-          '<button data-mem-batch="2" class="px-3 py-1 text-xs rounded-md border ' + (m.batchSize === 2 ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">2</button>' +
-        '</div>' +
         '<div class="flex items-center gap-2">' +
           '<span class="text-xs text-slate-400">LTM\u691C\u7D22\u30BF\u30A4\u30DF\u30F3\u30B0: <span class="tip"><svg class="inline w-3.5 h-3.5 -mt-0.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="1.5"/><path stroke-width="1.5" d="M9.5 9.5a2.5 2.5 0 0 1 4.99.5c0 1.5-2.49 2-2.49 3M12 17h.01"/></svg><span class="tip-text" style="white-space:normal;width:280px;">\u6BCE\u30EA\u30AF\u30A8\u30B9\u30C8: \u5168\u30EA\u30AF\u30A8\u30B9\u30C8\u3067LTM\u691C\u7D22\u3092\u5B9F\u884C\u3002\u6700\u65B0\u306E\u8A18\u61B6\u3092\u5E38\u306B\u53C2\u7167\u3067\u304D\u308B<br>\u521D\u56DE\u306E\u307F: \u30BB\u30C3\u30B7\u30E7\u30F3\u6700\u521D\u306E\u30EA\u30AF\u30A8\u30B9\u30C8\u306E\u307FLTM\u691C\u7D22\u3002\u691C\u7D22\u30B3\u30B9\u30C8\u3092\u524A\u6E1B\u3067\u304D\u308B\u304C\u3001\u4F1A\u8A71\u4E2D\u306E\u30B3\u30F3\u30C6\u30AD\u30B9\u30C8\u66F4\u65B0\u304C\u306A\u3044</span></span></span>' +
           '<button data-mem-retrieval="every" class="px-3 py-1 text-xs rounded-md border ' + (m.ltmRetrievalTiming === 'every' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">\u6BCE\u30EA\u30AF\u30A8\u30B9\u30C8</button>' +
@@ -742,7 +754,7 @@ function render() {
         [
           ['\u7DCF\u30EA\u30AF\u30A8\u30B9\u30C8', mr.totalRoundtrips.toLocaleString(), m.userCount.toLocaleString() + ' \u00D7 ' + m.sessionsPerUser + ' \u00D7 ' + m.roundtripsPerSession],
           ['\u7DCF\u30BB\u30C3\u30B7\u30E7\u30F3', mr.totalSessions.toLocaleString(), m.userCount.toLocaleString() + ' \u00D7 ' + m.sessionsPerUser],
-          ['STM \u30A4\u30D9\u30F3\u30C8', mr.totalEvents.toLocaleString(), mr.totalRoundtrips.toLocaleString() + ' \u00D7 ' + mr.eventsPerRT + (m.batchSize > 1 ? ' (batch=' + m.batchSize + ')' : '')],
+          ['STM \u30A4\u30D9\u30F3\u30C8', mr.totalEvents.toLocaleString(), mr.totalRoundtrips.toLocaleString() + ' \u00D7 ' + mr.eventsPerRT],
           ['LTM \u691C\u7D22', mr.totalRetrievals.toLocaleString(), (m.ltmRetrievalTiming === 'first' ? mr.totalSessions.toLocaleString() : mr.totalRoundtrips.toLocaleString()) + ' \u00D7 ' + m.retrievalsPerSession + (m.ltmRetrievalTiming === 'first' ? ' (\u521D\u56DE\u306E\u307F)' : '')],
           ['LTM \u30EC\u30B3\u30FC\u30C9', mr.totalRecords.toLocaleString(), m.userCount.toLocaleString() + ' \u00D7 ' + m.recordsPerUser],
         ].map(([label, val, formula]) =>
@@ -867,13 +879,6 @@ function render() {
   app.querySelectorAll('button[data-mem-strategy]').forEach(el => {
     el.addEventListener('click', () => {
       state.mem.useOverrideStrategy = el.dataset.memStrategy === 'override';
-      render();
-    });
-  });
-  // Memory batch size buttons
-  app.querySelectorAll('button[data-mem-batch]').forEach(el => {
-    el.addEventListener('click', () => {
-      state.mem.batchSize = Number(el.dataset.memBatch);
       render();
     });
   });
