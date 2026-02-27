@@ -553,13 +553,13 @@ function downloadExcel() {
   ];
   memParams.forEach(function(row, i) { ms_s('A'+(4+i), row[0]); ms_n('B'+(4+i), row[1]); });
   ms_s('A12', 'Strategy'); ms_s('B12', mm.useOverrideStrategy ? 'Override' : 'Default');
-  // Extraction parameters (B13:B16)
+  // Extraction parameters — model name triggers VLOOKUP from LLM単価 sheet
   var exModel = mm.extractionModel && pricingData[mm.extractionModel] ? pricingData[mm.extractionModel] : null;
-  ms_s('A13', '抽出モデル');                ms_s('B13', exModel ? exModel.name : 'なし');      // B13
+  ms_s('A13', '抽出モデル ▼');              ms_s('B13', exModel ? exModel.name : 'なし');      // B13 — change this to switch model
   ms_s('A14', '抽出入力トークン');          ms_n('B14', mm.extractionInputTokens || 0);        // B14
   ms_s('A15', '抽出出力トークン');          ms_n('B15', mm.extractionOutputTokens || 0);       // B15
-  ms_s('A16', '抽出入力単価 ($/MTok)');     ms_n('B16', exModel ? exModel.input : 0);          // B16
-  ms_s('A17', '抽出出力単価 ($/MTok)');     ms_n('B17', exModel ? exModel.output : 0);         // B17
+  ms_s('A16', '抽出入力単価 ($/MTok)');     ms_f('B16', "IFERROR(VLOOKUP(B13,'LLM単価'!A:B,2,FALSE),0)"); // B16 — auto from LLM単価
+  ms_s('A17', '抽出出力単価 ($/MTok)');     ms_f('B17', "IFERROR(VLOOKUP(B13,'LLM単価'!A:C,3,FALSE),0)"); // B17 — auto from LLM単価
 
   // B19:B22 — Unit prices (per 1000)
   ms_s('A19', '【単価 ($/1000)】');
@@ -616,6 +616,24 @@ function downloadExcel() {
   ms['!ref'] = 'A1:D49';
   ms['!cols'] = [{wch:32},{wch:16},{wch:16},{wch:16}];
   XLSX.utils.book_append_sheet(wb, ms, 'AgentCore Memory');
+
+  // LLM単価 sheet — model pricing table for VLOOKUP
+  var ls = {};
+  function ls_s(a,v) { ls[a] = {t:'s', v:String(v)}; }
+  function ls_n(a,v) { ls[a] = {t:'n', v:Number(v)}; }
+  ls_s('A1', 'モデル名'); ls_s('B1', '入力 ($/MTok)'); ls_s('C1', '出力 ($/MTok)'); ls_s('D1', 'プラットフォーム');
+  var mKeys = Object.keys(pricingData);
+  mKeys.forEach(function(k, i) {
+    var m = pricingData[k];
+    var row = i + 2;
+    ls_s('A'+row, m.name);
+    ls_n('B'+row, m.input);
+    ls_n('C'+row, m.output);
+    ls_s('D'+row, m.platform || '');
+  });
+  ls['!ref'] = 'A1:D' + (mKeys.length + 1);
+  ls['!cols'] = [{wch:24},{wch:16},{wch:16},{wch:16}];
+  XLSX.utils.book_append_sheet(wb, ls, 'LLM単価');
 
   XLSX.writeFile(wb, 'cost_simulation.xlsx');
 }
