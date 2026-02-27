@@ -102,6 +102,11 @@ const state = {
     stmEventsPerRequest: 2,
     ltmRetrievalTiming: 'every',
     useOverrideStrategy: false,
+    // LLM extraction cost (appendToPrompt with modelId)
+    extractionEnabled: true,
+    extractionModel: 'claude45Haiku',
+    extractionInputTokens: 2000,
+    extractionOutputTokens: 200,
   },
 };
 
@@ -202,9 +207,19 @@ function computeMemoryResults(m) {
   const ltmStorageCostOverride = totalRecords * memoryPricing.ltmStorageOvr;
   const ltmStorageCost = m.useOverrideStrategy ? ltmStorageCostOverride : ltmStorageCostDefault;
   const ltmRetrievalCost = totalRetrievals * memoryPricing.ltmRetrieval;
-  const totalCostDefault = stmCost + ltmStorageCostDefault + ltmRetrievalCost;
-  const totalCostOverride = stmCost + ltmStorageCostOverride + ltmRetrievalCost;
-  const totalCost = stmCost + ltmStorageCost + ltmRetrievalCost;
+
+  // LLM extraction cost (appendToPrompt + modelId → Bedrock inference charged separately)
+  let extractionCost = 0;
+  if (m.extractionEnabled && m.extractionModel && pricingData[m.extractionModel]) {
+    const em = pricingData[m.extractionModel];
+    const inMTok = (m.extractionInputTokens || 0) / 1e6;
+    const outMTok = (m.extractionOutputTokens || 0) / 1e6;
+    extractionCost = (inMTok * em.input + outMTok * em.output) * totalSessions;
+  }
+
+  const totalCostDefault = stmCost + ltmStorageCostDefault + ltmRetrievalCost + extractionCost;
+  const totalCostOverride = stmCost + ltmStorageCostOverride + ltmRetrievalCost + extractionCost;
+  const totalCost = stmCost + ltmStorageCost + ltmRetrievalCost + extractionCost;
 
   const perRequest = totalRoundtrips > 0 ? totalCost / totalRoundtrips : 0;
   const perSession = totalSessions > 0 ? totalCost / totalSessions : 0;
@@ -214,7 +229,7 @@ function computeMemoryResults(m) {
   return {
     totalSessions, totalEvents, totalRetrievals, totalRecords, totalRoundtrips, eventsPerRT,
     stmCost, ltmStorageCost, ltmStorageCostDefault, ltmStorageCostOverride,
-    ltmRetrievalCost, totalCost, totalCostDefault, totalCostOverride,
+    ltmRetrievalCost, extractionCost, totalCost, totalCostDefault, totalCostOverride,
     perRequest, perSession, perUserMonth, perUserYear,
   };
 }
@@ -342,6 +357,27 @@ function memoryParamGrid(m) {
         '<span class="tip-text">' + desc + '</span></span></span>' +
       '<input type="number" data-prefix="mem" data-key="' + key + '" value="' + m[key] + '" class="' + inputCls() + '" /></label>'
     ).join('') +
+    '</div>';
+}
+
+function extractionModelOptions(m) {
+  const models = Object.entries(pricingData).map(([key, mod]) => ({ key, name: mod.name, input: mod.input, output: mod.output }));
+  return models.map(mod =>
+    '<option value="' + mod.key + '"' + (m.extractionModel === mod.key ? ' selected' : '') + '>' +
+      mod.name + ' (in:$' + mod.input.toFixed(2) + ' / out:$' + mod.output.toFixed(2) + '/MTok)' +
+    '</option>'
+  ).join('');
+}
+
+function extractionParamSection(m) {
+  if (!m.extractionEnabled) return '';
+  return '<div class="grid grid-cols-2 lg:grid-cols-3 gap-3 mt-3">' +
+    '<label class="block"><span class="text-xs text-slate-500">\u62BD\u51FA\u30E2\u30C7\u30EB <span class="tip"><svg class="inline w-3.5 h-3.5 -mt-0.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="1.5"/><path stroke-width="1.5" d="M9.5 9.5a2.5 2.5 0 0 1 4.99.5c0 1.5-2.49 2-2.49 3M12 17h.01"/></svg><span class="tip-text" style="white-space:normal;width:300px;">appendToPrompt + modelId \u6307\u5B9A\u6642\u3001\u62BD\u51FA\u30FB\u7D71\u5408\u306E LLM \u63A8\u8AD6\u304C Bedrock \u6599\u91D1\u3068\u3057\u3066\u5225\u9014\u8AB2\u91D1\u3055\u308C\u308B</span></span></span>' +
+      '<select data-extraction-model class="' + inputCls() + '">' + extractionModelOptions(m) + '</select></label>' +
+    '<label class="block"><span class="text-xs text-slate-500">\u62BD\u51FA\u5165\u529B\u30C8\u30FC\u30AF\u30F3 <span class="tip"><svg class="inline w-3.5 h-3.5 -mt-0.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="1.5"/><path stroke-width="1.5" d="M9.5 9.5a2.5 2.5 0 0 1 4.99.5c0 1.5-2.49 2-2.49 3M12 17h.01"/></svg><span class="tip-text" style="white-space:normal;width:280px;">\u30B7\u30B9\u30C6\u30E0\u30D7\u30ED\u30F3\u30D7\u30C8 + appendToPrompt + \u4F1A\u8A71\u30B3\u30F3\u30C6\u30AD\u30B9\u30C8\u3002\u7D04 2,000 tok</span></span></span>' +
+      '<input type="number" data-prefix="mem" data-key="extractionInputTokens" value="' + m.extractionInputTokens + '" class="' + inputCls() + '" /></label>' +
+    '<label class="block"><span class="text-xs text-slate-500">\u62BD\u51FA\u51FA\u529B\u30C8\u30FC\u30AF\u30F3 <span class="tip"><svg class="inline w-3.5 h-3.5 -mt-0.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="1.5"/><path stroke-width="1.5" d="M9.5 9.5a2.5 2.5 0 0 1 4.99.5c0 1.5-2.49 2-2.49 3M12 17h.01"/></svg><span class="tip-text" style="white-space:normal;width:280px;">\u62BD\u51FA\u3055\u308C\u308B\u30EC\u30B3\u30FC\u30C9 (1\u301C3\u4EF6)\u3002\u7D04 200 tok</span></span></span>' +
+      '<input type="number" data-prefix="mem" data-key="extractionOutputTokens" value="' + m.extractionOutputTokens + '" class="' + inputCls() + '" /></label>' +
     '</div>';
 }
 
@@ -537,27 +573,32 @@ function downloadExcel() {
   ms_s('A29', 'STM イベント');      ms_f('B29', 'B23*B15/1000');          ms_f('C29', 'B29*B4');
   ms_s('A30', 'LTM ストレージ');    ms_f('B30', 'IF(B12="Override",B25*B17/1000,B25*B16/1000)'); ms_f('C30', 'B30*B4');
   ms_s('A31', 'LTM 検索');         ms_f('B31', 'B24*B18/1000');          ms_f('C31', 'B31*B4');
-  ms_s('A32', '合計');             ms_f('B32', 'B29+B30+B31');           ms_f('C32', 'B32*B4');
-  ms_s('A33', '1リクエスト単価');   ms_f('B33', 'IF(B22>0,B32/B22,0)');   ms_f('C33', 'B33*B4');
-  ms_s('A34', 'セッション単価');    ms_f('B34', 'IF(B21>0,B32/B21,0)');   ms_f('C34', 'B34*B4');
-  ms_s('A35', 'ユーザー月額');      ms_f('B35', 'IF(B5>0,B32/B5,0)');     ms_f('C35', 'B35*B4');
-  ms_s('A36', 'ユーザー年額');      ms_f('B36', 'B35*12');                ms_f('C36', 'B36*B4');
 
-  // B38:D42 — Override comparison (formulas)
-  ms_s('A38', '【Override比較】');
-  ms_s('A39', ''); ms_s('B39', 'Default'); ms_s('C39', 'Override'); ms_s('D39', '削減額');
-  ms_s('A40', 'LTM ストレージ (USD)');
-  ms_f('B40', 'B25*B16/1000');                        // Default storage cost
-  ms_f('C40', 'B25*B17/1000');                        // Override storage cost
-  ms_f('D40', 'B40-C40');                             // Savings
-  ms_s('A41', '合計 (USD)');
-  ms_f('B41', 'B29+B40+B31');                         // Default total
-  ms_f('C41', 'B29+C40+B31');                         // Override total
+  // LLM extraction cost (computed value, not formula — depends on pricingData lookup)
+  var memResults = computeMemoryResults(mm);
+  ms_s('A32', 'LLM 抽出');        ms_n('B32', memResults.extractionCost); ms_f('C32', 'B32*B4');
+
+  ms_s('A33', '合計');             ms_f('B33', 'B29+B30+B31+B32');       ms_f('C33', 'B33*B4');
+  ms_s('A34', '1リクエスト単価');   ms_f('B34', 'IF(B22>0,B33/B22,0)');   ms_f('C34', 'B34*B4');
+  ms_s('A35', 'セッション単価');    ms_f('B35', 'IF(B21>0,B33/B21,0)');   ms_f('C35', 'B35*B4');
+  ms_s('A36', 'ユーザー月額');      ms_f('B36', 'IF(B5>0,B33/B5,0)');     ms_f('C36', 'B36*B4');
+  ms_s('A37', 'ユーザー年額');      ms_f('B37', 'B36*12');                ms_f('C37', 'B37*B4');
+
+  // B39:D43 — Override comparison (formulas)
+  ms_s('A39', '【Override比較】');
+  ms_s('A40', ''); ms_s('B40', 'Default'); ms_s('C40', 'Override'); ms_s('D40', '削減額');
+  ms_s('A41', 'LTM ストレージ (USD)');
+  ms_f('B41', 'B25*B16/1000');                        // Default storage cost
+  ms_f('C41', 'B25*B17/1000');                        // Override storage cost
   ms_f('D41', 'B41-C41');                             // Savings
-  ms_s('A42', '削減率');
-  ms['D42'] = {t:'n', f:'IF(B41>0,(B41-C41)/B41,0)', z:'0.0%'};
+  ms_s('A42', '合計 (USD)');
+  ms_f('B42', 'B29+B41+B31+B32');                     // Default total (incl. extraction)
+  ms_f('C42', 'B29+C41+B31+B32');                     // Override total (incl. extraction)
+  ms_f('D42', 'B42-C42');                             // Savings
+  ms_s('A43', '削減率');
+  ms['D43'] = {t:'n', f:'IF(B42>0,(B42-C42)/B42,0)', z:'0.0%'};
 
-  ms['!ref'] = 'A1:D42';
+  ms['!ref'] = 'A1:D43';
   ms['!cols'] = [{wch:32},{wch:16},{wch:16},{wch:16}];
   XLSX.utils.book_append_sheet(wb, ms, 'AgentCore Memory');
 
@@ -733,7 +774,13 @@ function render() {
           '<button data-mem-retrieval="every" class="px-3 py-1 text-xs rounded-md border ' + (m.ltmRetrievalTiming === 'every' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">\u6BCE\u30EA\u30AF\u30A8\u30B9\u30C8</button>' +
           '<button data-mem-retrieval="first" class="px-3 py-1 text-xs rounded-md border ' + (m.ltmRetrievalTiming === 'first' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">\u521D\u56DE\u306E\u307F</button>' +
         '</div>' +
+        '<div class="flex items-center gap-2">' +
+          '<span class="text-xs text-slate-400">LLM\u62BD\u51FA\u30B3\u30B9\u30C8: <span class="tip"><svg class="inline w-3.5 h-3.5 -mt-0.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="1.5"/><path stroke-width="1.5" d="M9.5 9.5a2.5 2.5 0 0 1 4.99.5c0 1.5-2.49 2-2.49 3M12 17h.01"/></svg><span class="tip-text" style="white-space:normal;width:320px;">appendToPrompt + modelId \u3092\u6307\u5B9A\u3057\u305F "Built-in with overrides" \u6226\u7565\u3067\u306F\u3001\u62BD\u51FA\u30FB\u7D71\u5408\u306E LLM \u63A8\u8AD6\u304C Bedrock \u6599\u91D1\u3068\u3057\u3066\u5225\u9014\u8AB2\u91D1\u3055\u308C\u308B\u3002\u30BB\u30C3\u30B7\u30E7\u30F3\u3054\u3068\u306B1\u56DE\u5B9F\u884C</span></span></span>' +
+          '<button data-mem-extraction="on" class="px-3 py-1 text-xs rounded-md border ' + (m.extractionEnabled ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">ON</button>' +
+          '<button data-mem-extraction="off" class="px-3 py-1 text-xs rounded-md border ' + (!m.extractionEnabled ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">OFF</button>' +
+        '</div>' +
       '</div>' +
+      extractionParamSection(m) +
     '</section>';
 
     // Unit price table
@@ -773,6 +820,7 @@ function render() {
         '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">STM \u30A4\u30D9\u30F3\u30C8</td><td class="px-4 py-2 text-right">$' + fU(mr.stmCost) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.stmCost) + '</td><td class="px-4 py-2 text-right text-slate-400">' + (mr.totalCost > 0 ? (mr.stmCost / mr.totalCost * 100).toFixed(1) : '0') + '%</td></tr>' +
         '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">LTM \u30B9\u30C8\u30EC\u30FC\u30B8' + (m.useOverrideStrategy ? ' (Override)' : ' (Default)') + '</td><td class="px-4 py-2 text-right">$' + fU(mr.ltmStorageCost) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.ltmStorageCost) + '</td><td class="px-4 py-2 text-right text-slate-400">' + (mr.totalCost > 0 ? (mr.ltmStorageCost / mr.totalCost * 100).toFixed(1) : '0') + '%</td></tr>' +
         '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">LTM \u691C\u7D22</td><td class="px-4 py-2 text-right">$' + fU(mr.ltmRetrievalCost) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.ltmRetrievalCost) + '</td><td class="px-4 py-2 text-right text-slate-400">' + (mr.totalCost > 0 ? (mr.ltmRetrievalCost / mr.totalCost * 100).toFixed(1) : '0') + '%</td></tr>' +
+        (mr.extractionCost > 0 ? '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">LLM \u62BD\u51FA <span class="text-[10px] text-slate-400">(' + (pricingData[m.extractionModel] ? pricingData[m.extractionModel].name : '') + ')</span></td><td class="px-4 py-2 text-right">$' + fU(mr.extractionCost) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.extractionCost) + '</td><td class="px-4 py-2 text-right text-slate-400">' + (mr.totalCost > 0 ? (mr.extractionCost / mr.totalCost * 100).toFixed(1) : '0') + '%</td></tr>' : '') +
         '<tr class="border-t-2 border-slate-300 bg-slate-50 font-semibold"><td class="px-4 py-3 font-sans text-slate-700">\u5408\u8A08</td><td class="px-4 py-3 text-right">$' + fU(mr.totalCost) + '</td><td class="px-4 py-3 text-right">&yen;' + fJ(mr.totalCost) + '</td><td class="px-4 py-3 text-right">100%</td></tr>' +
         '<tr class="border-t border-slate-200"><td class="px-4 py-2 font-sans text-slate-500">1\u30EA\u30AF\u30A8\u30B9\u30C8\u5358\u4FA1</td><td class="px-4 py-2 text-right">$' + mr.perRequest.toFixed(5) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ2(mr.perRequest) + '</td><td></td></tr>' +
         '<tr class="border-t border-slate-100"><td class="px-4 py-2 font-sans text-slate-500">\u30BB\u30C3\u30B7\u30E7\u30F3\u5358\u4FA1</td><td class="px-4 py-2 text-right">$' + mr.perSession.toFixed(4) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ2(mr.perSession) + '</td><td></td></tr>' +
@@ -787,6 +835,7 @@ function render() {
           { label: 'STM \u30A4\u30D9\u30F3\u30C8', value: mr.stmCost, color: '#3B82F6' },
           { label: 'LTM \u30B9\u30C8\u30EC\u30FC\u30B8', value: mr.ltmStorageCost, color: '#8B5CF6' },
           { label: 'LTM \u691C\u7D22', value: mr.ltmRetrievalCost, color: '#10B981' },
+          ...(mr.extractionCost > 0 ? [{ label: 'LLM \u62BD\u51FA', value: mr.extractionCost, color: '#F59E0B' }] : []),
         ]) +
       '</div>' +
       '<div><h2 class="text-sm font-semibold text-slate-700 mb-3">Override Strategy \u6BD4\u8F03</h2>' +
@@ -800,7 +849,15 @@ function render() {
       '</div></div></section>';
 
     // Preset comparison table
-    const presetResults = memoryPresets.map(p => ({ preset: p, result: computeMemoryResults(p) }));
+    const presetResults = memoryPresets.map(p => ({ preset: p, result: computeMemoryResults({
+      ...p,
+      stmEventsPerRequest: m.stmEventsPerRequest || 2,
+      ltmRetrievalTiming: m.ltmRetrievalTiming || 'every',
+      extractionEnabled: m.extractionEnabled,
+      extractionModel: m.extractionModel,
+      extractionInputTokens: m.extractionInputTokens,
+      extractionOutputTokens: m.extractionOutputTokens,
+    }) }));
     html += '<section class="mb-8"><h2 class="text-sm font-semibold text-slate-700 mb-3">規模別シミュレーション比較</h2>' +
       '<div class="overflow-x-auto border border-slate-200 rounded-lg"><table class="w-full text-sm">' +
       '<thead><tr class="bg-slate-50"><th class="px-4 py-2.5 text-xs text-slate-500 text-left">項目</th>' +
@@ -821,6 +878,7 @@ function render() {
         '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">STMイベント</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ(pr.result.stmCost) + '</td>').join('') + '</tr>' +
         '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTMストレージ</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ(pr.result.ltmStorageCostDefault) + '</td>').join('') + '</tr>' +
         '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTM検索</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ(pr.result.ltmRetrievalCost) + '</td>').join('') + '</tr>' +
+        (presetResults[0].result.extractionCost > 0 ? '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LLM抽出</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ(pr.result.extractionCost) + '</td>').join('') + '</tr>' : '') +
         '<tr class="border-t-2 border-slate-300 bg-slate-50 font-semibold"><td class="px-4 py-2 text-slate-700">合計 (Default)</td>' + presetResults.map(pr => '<td class="px-4 py-2 text-right font-mono">&yen;' + fJ(pr.result.totalCostDefault) + '</td>').join('') + '</tr>' +
         '<tr class="border-t border-slate-200 bg-green-50 font-semibold"><td class="px-4 py-2 text-green-700">合計 (Override)</td>' + presetResults.map(pr => '<td class="px-4 py-2 text-right font-mono text-green-700">&yen;' + fJ(pr.result.totalCostOverride) + '</td>').join('') + '</tr>' +
         '<tr class="border-t border-slate-100 bg-slate-50/50"><td colspan="' + (presetResults.length + 1) + '" class="px-4 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">単価 (Default Strategy)</td></tr>' +
@@ -886,6 +944,20 @@ function render() {
   app.querySelectorAll('button[data-mem-retrieval]').forEach(el => {
     el.addEventListener('click', () => {
       state.mem.ltmRetrievalTiming = el.dataset.memRetrieval;
+      render();
+    });
+  });
+  // Memory extraction toggle
+  app.querySelectorAll('button[data-mem-extraction]').forEach(el => {
+    el.addEventListener('click', () => {
+      state.mem.extractionEnabled = el.dataset.memExtraction === 'on';
+      render();
+    });
+  });
+  // Memory extraction model select
+  app.querySelectorAll('select[data-extraction-model]').forEach(el => {
+    el.addEventListener('change', () => {
+      state.mem.extractionModel = el.value;
       render();
     });
   });
