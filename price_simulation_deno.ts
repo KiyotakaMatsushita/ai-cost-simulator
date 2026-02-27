@@ -553,54 +553,67 @@ function downloadExcel() {
   ];
   memParams.forEach(function(row, i) { ms_s('A'+(4+i), row[0]); ms_n('B'+(4+i), row[1]); });
   ms_s('A12', 'Strategy'); ms_s('B12', mm.useOverrideStrategy ? 'Override' : 'Default');
+  // Extraction parameters (B13:B16)
+  var exModel = mm.extractionModel && pricingData[mm.extractionModel] ? pricingData[mm.extractionModel] : null;
+  ms_s('A13', '抽出モデル');                ms_s('B13', exModel ? exModel.name : 'なし');      // B13
+  ms_s('A14', '抽出入力トークン');          ms_n('B14', mm.extractionInputTokens || 0);        // B14
+  ms_s('A15', '抽出出力トークン');          ms_n('B15', mm.extractionOutputTokens || 0);       // B15
+  ms_s('A16', '抽出入力単価 ($/MTok)');     ms_n('B16', exModel ? exModel.input : 0);          // B16
+  ms_s('A17', '抽出出力単価 ($/MTok)');     ms_n('B17', exModel ? exModel.output : 0);         // B17
 
-  // B15:B18 — Unit prices (per 1000)
-  ms_s('A14', '【単価 ($/1000)】');
-  ms_s('A15', 'STM イベント');              ms_n('B15', 0.25);  // B15
-  ms_s('A16', 'LTM ストレージ Default');    ms_n('B16', 0.75);  // B16
-  ms_s('A17', 'LTM ストレージ Override');   ms_n('B17', 0.25);  // B17
-  ms_s('A18', 'LTM 検索');                  ms_n('B18', 0.50);  // B18
+  // B19:B22 — Unit prices (per 1000)
+  ms_s('A19', '【単価 ($/1000)】');
+  ms_s('A20', 'STM イベント');              ms_n('B20', 0.25);  // B20
+  ms_s('A21', 'LTM ストレージ Default');    ms_n('B21', 0.75);  // B21
+  ms_s('A22', 'LTM ストレージ Override');   ms_n('B22', 0.25);  // B22
+  ms_s('A23', 'LTM 検索');                  ms_n('B23', 0.50);  // B23
 
-  // B20:B24 — Volumes (formulas)
-  ms_s('A20', '【ボリューム】');
-  ms_s('A21', '総セッション');      ms_f('B21', 'B5*B6');                                // userCount * sessionsPerUser
-  ms_s('A22', '総リクエスト');      ms_f('B22', 'B21*B7');                                // totalSessions * roundtripsPerSession
-  ms_s('A23', 'STM イベント数');    ms_f('B23', 'B22*B10');                                // totalRoundtrips * stmEventsPerRequest
-  ms_s('A24', 'LTM 検索数');       ms_f('B24', 'IF(B11=1,B21*B8,B22*B8)');              // first: sessions*ret, every: roundtrips*ret
-  ms_s('A25', 'LTM レコード数');    ms_f('B25', 'B5*B9');                                // userCount * recordsPerUser
+  // B25:B30 — Volumes (formulas)
+  ms_s('A25', '【ボリューム】');
+  ms_s('A26', '総セッション');      ms_f('B26', 'B5*B6');                                // userCount * sessionsPerUser
+  ms_s('A27', '総リクエスト');      ms_f('B27', 'B26*B7');                                // totalSessions * roundtripsPerSession
+  ms_s('A28', 'STM イベント数');    ms_f('B28', 'B27*B10');                                // totalRoundtrips * stmEventsPerRequest
+  ms_s('A29', 'LTM 検索数');       ms_f('B29', 'IF(B11=1,B26*B8,B27*B8)');              // first: sessions*ret, every: roundtrips*ret
+  ms_s('A30', 'LTM レコード数');    ms_f('B30', 'B5*B9');                                // userCount * recordsPerUser
 
-  // B27:C36 — Cost breakdown (formulas)
-  ms_s('A27', '【コスト内訳 (月額)】');
-  ms_s('A28', ''); ms_s('B28', 'USD'); ms_s('C28', 'JPY');
-  ms_s('A29', 'STM イベント');      ms_f('B29', 'B23*B15/1000');          ms_f('C29', 'B29*B4');
-  ms_s('A30', 'LTM ストレージ');    ms_f('B30', 'IF(B12="Override",B25*B17/1000,B25*B16/1000)'); ms_f('C30', 'B30*B4');
-  ms_s('A31', 'LTM 検索');         ms_f('B31', 'B24*B18/1000');          ms_f('C31', 'B31*B4');
+  // B32:C41 — Cost breakdown (formulas)
+  ms_s('A32', '【コスト内訳 (月額)】');
+  ms_s('A33', ''); ms_s('B33', 'USD'); ms_s('C33', 'JPY');
+  ms_s('A34', 'STM イベント');      ms_f('B34', 'B28*B20/1000');          ms_f('C34', 'B34*B4');
+  ms_s('A35', 'LTM ストレージ');    ms_f('B35', 'IF(B12="Override",B30*B22/1000,B30*B21/1000)'); ms_f('C35', 'B35*B4');
+  ms_s('A36', 'LTM 検索');         ms_f('B36', 'B29*B23/1000');          ms_f('C36', 'B36*B4');
 
-  // LLM extraction cost (computed value, not formula — depends on pricingData lookup)
-  var memResults = computeMemoryResults(mm);
-  ms_s('A32', 'LLM 抽出');        ms_n('B32', memResults.extractionCost); ms_f('C32', 'B32*B4');
+  // LLM extraction cost — formula: (inputTok/1M * inputPrice + outputTok/1M * outputPrice) * totalSessions
+  // Only applies when Override strategy is selected
+  ms_s('A37', 'LLM 抽出');
+  ms_f('B37', 'IF(B12="Override",(B14/1000000*B16+B15/1000000*B17)*B26,0)');
+  ms_f('C37', 'B37*B4');
 
-  ms_s('A33', '合計');             ms_f('B33', 'B29+B30+B31+B32');       ms_f('C33', 'B33*B4');
-  ms_s('A34', '1リクエスト単価');   ms_f('B34', 'IF(B22>0,B33/B22,0)');   ms_f('C34', 'B34*B4');
-  ms_s('A35', 'セッション単価');    ms_f('B35', 'IF(B21>0,B33/B21,0)');   ms_f('C35', 'B35*B4');
-  ms_s('A36', 'ユーザー月額');      ms_f('B36', 'IF(B5>0,B33/B5,0)');     ms_f('C36', 'B36*B4');
-  ms_s('A37', 'ユーザー年額');      ms_f('B37', 'B36*12');                ms_f('C37', 'B37*B4');
+  ms_s('A38', '合計');             ms_f('B38', 'B34+B35+B36+B37');       ms_f('C38', 'B38*B4');
+  ms_s('A39', '1リクエスト単価');   ms_f('B39', 'IF(B27>0,B38/B27,0)');   ms_f('C39', 'B39*B4');
+  ms_s('A40', 'セッション単価');    ms_f('B40', 'IF(B26>0,B38/B26,0)');   ms_f('C40', 'B40*B4');
+  ms_s('A41', 'ユーザー月額');      ms_f('B41', 'IF(B5>0,B38/B5,0)');     ms_f('C41', 'B41*B4');
+  ms_s('A42', 'ユーザー年額');      ms_f('B42', 'B41*12');                ms_f('C42', 'B42*B4');
 
-  // B39:D43 — Override comparison (formulas)
-  ms_s('A39', '【Override比較】');
-  ms_s('A40', ''); ms_s('B40', 'Default'); ms_s('C40', 'Override'); ms_s('D40', '削減額');
-  ms_s('A41', 'LTM ストレージ (USD)');
-  ms_f('B41', 'B25*B16/1000');                        // Default storage cost
-  ms_f('C41', 'B25*B17/1000');                        // Override storage cost
-  ms_f('D41', 'B41-C41');                             // Savings
-  ms_s('A42', '合計 (USD)');
-  ms_f('B42', 'B29+B41+B31+B32');                     // Default total (incl. extraction)
-  ms_f('C42', 'B29+C41+B31+B32');                     // Override total (incl. extraction)
-  ms_f('D42', 'B42-C42');                             // Savings
-  ms_s('A43', '削減率');
-  ms['D43'] = {t:'n', f:'IF(B42>0,(B42-C42)/B42,0)', z:'0.0%'};
+  // B44:D50 — Override comparison (formulas)
+  ms_s('A44', '【Override比較】');
+  ms_s('A45', ''); ms_s('B45', 'Default'); ms_s('C45', 'Override'); ms_s('D45', '差額');
+  ms_s('A46', 'LTM ストレージ (USD)');
+  ms_f('B46', 'B30*B21/1000');                        // Default storage cost
+  ms_f('C46', 'B30*B22/1000');                        // Override storage cost
+  ms_f('D46', 'B46-C46');                             // Savings (positive = cheaper)
+  ms_s('A47', 'LLM 抽出 (USD)');
+  ms_n('B47', 0);                                     // Default: no extraction cost
+  ms_f('C47', '(B14/1000000*B16+B15/1000000*B17)*B26'); // Override: extraction cost
+  ms_f('D47', 'B47-C47');                             // Increase (negative = more expensive)
+  ms_s('A48', '合計 (USD)');
+  ms_f('B48', 'B34+B46+B36');                         // Default total (no extraction)
+  ms_f('C48', 'B34+C46+B36+C47');                     // Override total (with extraction)
+  ms_f('D48', 'B48-C48');                             // Net difference
+  ms_s('A49', '差額率');
+  ms['D49'] = {t:'n', f:'IF(B48>0,(B48-C48)/B48,0)', z:'0.0%'};
 
-  ms['!ref'] = 'A1:D43';
+  ms['!ref'] = 'A1:D49';
   ms['!cols'] = [{wch:32},{wch:16},{wch:16},{wch:16}];
   XLSX.utils.book_append_sheet(wb, ms, 'AgentCore Memory');
 
