@@ -81,7 +81,7 @@ const memoryPresets = [
 
 // \u2500\u2500 State \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 const state = {
-  activeTab: 'simulator',
+  activeTab: (['simulator','scenario','memory'].indexOf(location.hash.replace('#','')) !== -1 ? location.hash.replace('#','') : 'simulator'),
   exchangeRate: 155.00,
   // Simulator tab
   sim: {
@@ -930,7 +930,7 @@ function render() {
 
   // \u2500\u2500 Bind Events \u2500\u2500
   app.querySelectorAll('button[data-tab]').forEach(el => {
-    el.addEventListener('click', () => { state.activeTab = el.dataset.tab; render(); });
+    el.addEventListener('click', () => { state.activeTab = el.dataset.tab; history.pushState(null, '', '#' + el.dataset.tab); render(); });
   });
   app.querySelectorAll('input[data-key="exchangeRate"]').forEach(el => {
     el.addEventListener('input', (e) => {
@@ -1016,6 +1016,10 @@ function restoreFocus(key, prefix) {
 }
 
 // \u2500\u2500 Bootstrap \u2500\u2500
+window.addEventListener('popstate', function() {
+  var h = location.hash.replace('#','');
+  if (['simulator','scenario','memory'].indexOf(h) !== -1) { state.activeTab = h; render(); }
+});
 render();
 </script>
 </body>
