@@ -214,7 +214,7 @@ function computeMemoryResults(m) {
     const em = pricingData[m.extractionModel];
     const inMTok = (m.extractionInputTokens || 0) / 1e6;
     const outMTok = (m.extractionOutputTokens || 0) / 1e6;
-    extractionCost = (inMTok * em.input + outMTok * em.output) * totalSessions;
+    extractionCost = (inMTok * em.input + outMTok * em.output) * totalRoundtrips;
   }
 
   // Default: AWS handles extraction automatically (included in storage price) → no separate LLM cost
@@ -583,10 +583,10 @@ function downloadExcel() {
   ms_s('A35', 'LTM ストレージ');    ms_f('B35', 'IF(B12="Override",B30*B22/1000,B30*B21/1000)'); ms_f('C35', 'B35*B4');
   ms_s('A36', 'LTM 検索');         ms_f('B36', 'B29*B23/1000');          ms_f('C36', 'B36*B4');
 
-  // LLM extraction cost — formula: (inputTok/1M * inputPrice + outputTok/1M * outputPrice) * totalSessions
+  // LLM extraction cost — formula: (inputTok/1M * inputPrice + outputTok/1M * outputPrice) * totalRoundtrips
   // Only applies when Override strategy is selected
   ms_s('A37', 'LLM 抽出');
-  ms_f('B37', 'IF(B12="Override",(B14/1000000*B16+B15/1000000*B17)*B26,0)');
+  ms_f('B37', 'IF(B12="Override",(B14/1000000*B16+B15/1000000*B17)*B27,0)');
   ms_f('C37', 'B37*B4');
 
   ms_s('A38', '合計');             ms_f('B38', 'B34+B35+B36+B37');       ms_f('C38', 'B38*B4');
@@ -604,7 +604,7 @@ function downloadExcel() {
   ms_f('D46', 'B46-C46');                             // Savings (positive = cheaper)
   ms_s('A47', 'LLM 抽出 (USD)');
   ms_n('B47', 0);                                     // Default: no extraction cost
-  ms_f('C47', '(B14/1000000*B16+B15/1000000*B17)*B26'); // Override: extraction cost
+  ms_f('C47', '(B14/1000000*B16+B15/1000000*B17)*B27'); // Override: extraction cost
   ms_f('D47', 'B47-C47');                             // Increase (negative = more expensive)
   ms_s('A48', '合計 (USD)');
   ms_f('B48', 'B34+B46+B36');                         // Default total (no extraction)
