@@ -86,5 +86,38 @@
     "output": 10.00,
     "storage": 0,
     "color": "#171717"
+  },
+  "novaMicro": {
+    "name": "Nova Micro",
+    "platform": "Bedrock",
+    "input": 0.035,
+    "cacheWrite5m": 0.035,
+    "cacheWrite1h": 0.035,
+    "cachedInput": 0.00875,
+    "output": 0.14,
+    "storage": 0,
+    "color": "#FF9900"
+  },
+  "novaLite": {
+    "name": "Nova Lite",
+    "platform": "Bedrock",
+    "input": 0.06,
+    "cacheWrite5m": 0.06,
+    "cacheWrite1h": 0.06,
+    "cachedInput": 0.015,
+    "output": 0.24,
+    "storage": 0,
+    "color": "#00A4B4"
+  },
+  "novaPro": {
+    "name": "Nova Pro",
+    "platform": "Bedrock",
+    "input": 0.80,
+    "cacheWrite5m": 0.80,
+    "cacheWrite1h": 0.80,
+    "cachedInput": 0.20,
+    "output": 3.20,
+    "storage": 0,
+    "color": "#146EB4"
   }
 }

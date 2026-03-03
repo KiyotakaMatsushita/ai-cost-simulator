@@ -140,9 +140,20 @@ function calcOpenAIWpd(p) {
   if (avgInterval <= ttlHours) return 1;
   return Math.ceil(rpd);
 }
+// Nova: 5-min TTL sliding window, same as OpenAI
+function calcNovaWpd(p) {
+  const totalReqs = p.userCount * p.reqPerUser;
+  const rpd = p.isSharedCache ? totalReqs / p.testDays : p.reqPerUser / p.testDays;
+  if (rpd === 0 || p.hoursPerDay === 0) return 0;
+  const ttlHours = 5 / 60;
+  const avgInterval = p.hoursPerDay / rpd;
+  if (avgInterval <= ttlHours) return 1;
+  return Math.ceil(rpd);
+}
 function getWpd(key, p) {
   if (key.includes('claude')) return getClaudeWpd(p);
   if (key.includes('gpt')) return calcOpenAIWpd(p);
+  if (key.includes('nova')) return calcNovaWpd(p);
   return 1; // Gemini: persistent
 }
 
@@ -153,6 +164,7 @@ function computeResults(p) {
   const results = Object.entries(pricingData).map(([key, m]) => {
     const ic = key.includes('claude');
     const io = key.includes('gpt');
+    const iNv = key.includes('nova');
     const cM = p.cacheTokens / 1e6, rM = p.cacheReadTokens / 1e6, pM = p.promptTokens / 1e6, oM = p.outputTokens / 1e6;
     const sc = p.isSharedCache ? 1 : p.userCount;
     const wp = ic ? (p.claudeWriteType === '1h' ? m.cacheWrite1h : m.cacheWrite5m) : m.input;
@@ -166,7 +178,7 @@ function computeResults(p) {
     const tot = wr + st + rd + pr + ou;
     const pReq = totalReqs > 0 ? tot / totalReqs : 0;
     const noC = (p.cacheReadTokens + p.promptTokens) / 1e6 * m.input * totalReqs + ou;
-    return { ...m, id: key, isClaude: ic, isOpenAI: io, writePrice: wp, writesPerDay: wpd, write: wr, storageCost: st, read: rd, prompt: pr, outputCost: ou, total: tot, perReq: pReq, noCache: noC, savPct: (((noC - tot) / noC) * 100).toFixed(1), savUSD: noC - tot };
+    return { ...m, id: key, isClaude: ic, isOpenAI: io, isNova: iNv, writePrice: wp, writesPerDay: wpd, write: wr, storageCost: st, read: rd, prompt: pr, outputCost: ou, total: tot, perReq: pReq, noCache: noC, savPct: (((noC - tot) / noC) * 100).toFixed(1), savUSD: noC - tot };
   });
   return { results, totalReqs, totalHours };
 }
@@ -689,10 +701,11 @@ function render() {
         '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">\u51FA\u529B</td>' + results.map(r => '<td class="px-4 py-2">' + r.output.toFixed(2) + '</td>').join('') + '</tr>' +
         '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">\u4FDD\u7BA1 (/h)</td>' + results.map(r => '<td class="px-4 py-2 ' + (r.storage > 0 ? 'text-orange-600' : 'text-slate-400') + '">' + (r.storage > 0 ? r.storage.toFixed(2) : '\u2014') + '</td>').join('') + '</tr>' +
       '</tbody></table></div>' +
-      '<p class="mt-2 text-[11px] text-slate-400">* Claude Write\u306F\u4E0A\u4E57\u305B (5m:1.25x, 1h:2.0x)\u3002Gemini/OpenAI Write = Input\u3068\u540C\u984D\u3002Read = Input\u306E10%\u3002' +
+      '<p class="mt-2 text-[11px] text-slate-400">* Claude Write\u306F\u4E0A\u4E57\u305B (5m:1.25x, 1h:2.0x)\u3002Gemini/OpenAI/Nova Write = Input\u3068\u540C\u984D\u3002Read = Input\u306E10% (Nova\u306F25%)\u3002' +
         '<a href="https://cloud.google.com/vertex-ai/generative-ai/pricing" target="_blank" class="text-blue-500 hover:underline ml-1">Vertex AI \u2197</a>' +
         '<a href="https://www.anthropic.com/pricing" target="_blank" class="text-blue-500 hover:underline ml-1">Anthropic \u2197</a>' +
-        '<a href="https://openai.com/api/pricing/" target="_blank" class="text-blue-500 hover:underline ml-1">OpenAI \u2197</a></p></section>';
+        '<a href="https://openai.com/api/pricing/" target="_blank" class="text-blue-500 hover:underline ml-1">OpenAI \u2197</a>' +
+        '<a href="https://aws.amazon.com/bedrock/pricing/" target="_blank" class="text-blue-500 hover:underline ml-1">Bedrock \u2197</a></p></section>';
 
     // Cost breakdown
     html += '<section class="mb-8"><div class="flex items-baseline gap-4 mb-3"><h2 class="text-sm font-semibold text-slate-700">\u30B3\u30B9\u30C8\u5185\u8A33 (\u00A5)</h2><span class="text-xs text-slate-400">\u7DCF\u30EA\u30AF\u30A8\u30B9\u30C8: ' + totalReqs.toLocaleString() + ' / ' + (p.isSharedCache ? '\u5171\u6709' : '\u500B\u5225') + '</span></div>' +
@@ -708,7 +721,7 @@ function render() {
             }).join('') + '</tr>';
           if (k === 'write') {
             row += '<tr class="border-t border-slate-50 bg-slate-50/50"><td class="px-4 py-1 text-[11px] text-slate-400 font-sans pl-8">\u2514 \u66F8\u8FBC\u56DE\u6570/\u65E5 (TTL)</td>' +
-              results.map(r => '<td class="px-4 py-1 text-[11px] text-slate-400">' + r.writesPerDay + '\u56DE/\u65E5' + (r.isClaude ? ' (' + (p.claudeWriteType === '1h' ? '1h TTL' : '5m TTL') + ')' : r.isOpenAI ? ' (\u81EA\u52D5~5m)' : ' (\u6301\u7D9A)') + '</td>').join('') + '</tr>';
+              results.map(r => '<td class="px-4 py-1 text-[11px] text-slate-400">' + r.writesPerDay + '\u56DE/\u65E5' + (r.isClaude ? ' (' + (p.claudeWriteType === '1h' ? '1h TTL' : '5m TTL') + ')' : r.isOpenAI ? ' (\u81EA\u52D5~5m)' : r.isNova ? ' (5m TTL)' : ' (\u6301\u7D9A)') + '</td>').join('') + '</tr>';
           }
           return row;
         }).join('') +
