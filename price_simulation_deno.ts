@@ -47,21 +47,21 @@ const pricingData = __PRICING_DATA__;
 const presets = [
   {
     name: '\u5C0F\u898F\u6A21 PoC',
-    cacheTokens: 30000, cacheReadTokens: 30000, promptTokens: 5000, outputTokens: 1500,
-    userCount: 500, reqPerUser: 5, testDays: 14, hoursPerDay: 24,
-    isSharedCache: true, claudeWriteType: '1h', cacheHitRate: 80, claudeWritesPerDay: 0,
+    promptTokens: 2000, outputTokens: 500, cacheWriteTokens: 3000, cacheReadTokens: 8000, cacheTokens: 10000,
+    userCount: 100, reqPerUser: 5, testDays: 14, hoursPerDay: 24,
+    claudeWriteType: '5m', cacheWritesPerDay: 0,
   },
   {
     name: '\u672C\u756A\u904B\u7528',
-    cacheTokens: 50000, cacheReadTokens: 50000, promptTokens: 7000, outputTokens: 2000,
-    userCount: 2500, reqPerUser: 10, testDays: 30, hoursPerDay: 24,
-    isSharedCache: true, claudeWriteType: '1h', cacheHitRate: 90, claudeWritesPerDay: 0,
+    promptTokens: 3000, outputTokens: 1000, cacheWriteTokens: 5000, cacheReadTokens: 15000, cacheTokens: 20000,
+    userCount: 1000, reqPerUser: 10, testDays: 30, hoursPerDay: 24,
+    claudeWriteType: '5m', cacheWritesPerDay: 0,
   },
   {
     name: '\u5927\u898F\u6A21\u5C55\u958B',
-    cacheTokens: 100000, cacheReadTokens: 80000, promptTokens: 10000, outputTokens: 3000,
+    promptTokens: 5000, outputTokens: 2000, cacheWriteTokens: 10000, cacheReadTokens: 30000, cacheTokens: 40000,
     userCount: 10000, reqPerUser: 20, testDays: 30, hoursPerDay: 24,
-    isSharedCache: true, claudeWriteType: '1h', cacheHitRate: 95, claudeWritesPerDay: 0,
+    claudeWriteType: '5m', cacheWritesPerDay: 0,
   },
 ];
 
@@ -85,9 +85,9 @@ const state = {
   exchangeRate: 155.00,
   // Simulator tab
   sim: {
-    cacheTokens: 50000, promptTokens: 7000, outputTokens: 2000, cacheReadTokens: 50000,
-    userCount: 2500, reqPerUser: 10, testDays: 7, hoursPerDay: 24,
-    claudeWriteType: '1h', isSharedCache: true, cacheHitRate: 90, claudeWritesPerDay: 0,
+    promptTokens: 3000, outputTokens: 1000, cacheWriteTokens: 5000, cacheReadTokens: 10000, cacheTokens: 15000,
+    userCount: 1000, reqPerUser: 10, testDays: 7, hoursPerDay: 24,
+    claudeWriteType: '5m', cacheWritesPerDay: 0,
   },
   // Scenario tab
   activeScenario: 0,
@@ -104,7 +104,6 @@ const state = {
     useOverrideStrategy: false,
     // LLM extraction cost (linked to Override strategy)
     extractionEnabled: false,
-    extractionModel: 'claude45Haiku',
     extractionInputTokens: 2000,
     extractionOutputTokens: 200,
   },
@@ -116,88 +115,78 @@ function fJ2(usd) { return (Number(usd) * state.exchangeRate).toLocaleString('ja
 function fU(v) { return Number(v).toFixed(2); }
 
 // Auto-calculate Claude writes/day based on request frequency and TTL
-// If requests arrive more frequently than the TTL, the cache stays alive (sliding window) → 1 write/day
-// Otherwise, each request triggers a fresh cache write
-function calcClaudeWpd(p) {
-  const totalReqs = p.userCount * p.reqPerUser;
-  const rpd = p.isSharedCache ? totalReqs / p.testDays : p.reqPerUser / p.testDays;
-  if (rpd === 0 || p.hoursPerDay === 0) return 0;
-  const ttlHours = p.claudeWriteType === '1h' ? 1 : 5 / 60;
-  const avgInterval = p.hoursPerDay / rpd;
+// 初回キャッシュ(C)の再書込回数/日を自動計算
+// Cは全ユーザー共通キャッシュなので、全ユーザー合計のリクエスト頻度でTTLを判定
+function calcSharedWpd(p, ttlHours) {
+  const totalRpd = (p.userCount * p.reqPerUser) / p.testDays;
+  if (totalRpd === 0 || p.hoursPerDay === 0) return 0;
+  const avgInterval = p.hoursPerDay / totalRpd;
   if (avgInterval <= ttlHours) return 1;
-  return Math.ceil(rpd);
-}
-function getClaudeWpd(p) {
-  return (p.claudeWritesPerDay > 0) ? p.claudeWritesPerDay : calcClaudeWpd(p);
-}
-// OpenAI: automatic caching, no write surcharge, ~5min TTL
-function calcOpenAIWpd(p) {
-  const totalReqs = p.userCount * p.reqPerUser;
-  const rpd = p.isSharedCache ? totalReqs / p.testDays : p.reqPerUser / p.testDays;
-  if (rpd === 0 || p.hoursPerDay === 0) return 0;
-  const ttlHours = 5 / 60;
-  const avgInterval = p.hoursPerDay / rpd;
-  if (avgInterval <= ttlHours) return 1;
-  return Math.ceil(rpd);
-}
-// Nova: 5-min TTL sliding window, same as OpenAI
-function calcNovaWpd(p) {
-  const totalReqs = p.userCount * p.reqPerUser;
-  const rpd = p.isSharedCache ? totalReqs / p.testDays : p.reqPerUser / p.testDays;
-  if (rpd === 0 || p.hoursPerDay === 0) return 0;
-  const ttlHours = 5 / 60;
-  const avgInterval = p.hoursPerDay / rpd;
-  if (avgInterval <= ttlHours) return 1;
-  return Math.ceil(rpd);
+  return Math.ceil(p.hoursPerDay / ttlHours);
 }
 function getWpd(key, p) {
-  if (key.includes('claude')) return getClaudeWpd(p);
-  if (key.includes('gpt')) return calcOpenAIWpd(p);
-  if (key.includes('nova')) return calcNovaWpd(p);
-  return 1; // Gemini: persistent
+  if (p.cacheWritesPerDay > 0) {
+    if (key.includes('gemini')) return 1;
+    return p.cacheWritesPerDay;
+  }
+  if (key.includes('gemini')) return 1;
+  if (key.includes('claude')) {
+    const ttl = p.claudeWriteType === '1h' ? 1 : 5 / 60;
+    return calcSharedWpd(p, ttl);
+  }
+  if (key.includes('gpt') || key.includes('nova')) return calcSharedWpd(p, 5 / 60);
+  return 1;
+}
+
+// モデルごとの共通プロパティを算出
+function modelProps(key, m, p) {
+  const isClaude = key.includes('claude');
+  const isGemini = key.includes('gemini');
+  const cwM = (isGemini ? 0 : (p.cacheWriteTokens || 0)) / 1e6;
+  const crM = (isGemini ? p.cacheTokens : (p.cacheReadTokens || 0)) / 1e6;
+  const cM = p.cacheTokens / 1e6;
+  const pM = p.promptTokens / 1e6;
+  const oM = p.outputTokens / 1e6;
+  const wp = isClaude ? (p.claudeWriteType === '1h' ? m.cacheWrite1h : m.cacheWrite5m) : m.input;
+  const wpd = getWpd(key, p);
+  return { isClaude, isOpenAI: key.includes('gpt'), isNova: key.includes('nova'), isGemini, cwM, crM, cM, pM, oM, wp, wpd };
 }
 
 function computeResults(p) {
   const totalReqs = p.userCount * p.reqPerUser;
   const totalHours = p.hoursPerDay * p.testDays;
-  const hitRate = (p.cacheHitRate ?? 100) / 100;
   const results = Object.entries(pricingData).map(([key, m]) => {
-    const ic = key.includes('claude');
-    const io = key.includes('gpt');
-    const iNv = key.includes('nova');
-    const cM = p.cacheTokens / 1e6, rM = p.cacheReadTokens / 1e6, pM = p.promptTokens / 1e6, oM = p.outputTokens / 1e6;
-    const sc = p.isSharedCache ? 1 : p.userCount;
-    const wp = ic ? (p.claudeWriteType === '1h' ? m.cacheWrite1h : m.cacheWrite5m) : m.input;
-    const wpd = getWpd(key, p);
-    const wr = cM * wp * wpd * p.testDays * sc;
-    const st = cM * m.storage * totalHours * sc;
-    // Cache miss pays full input price instead of cached price
-    const rd = rM * (m.cachedInput * hitRate + m.input * (1 - hitRate)) * totalReqs;
-    const pr = pM * m.input * totalReqs;
-    const ou = oM * m.output * totalReqs;
-    const tot = wr + st + rd + pr + ou;
+    const mp = modelProps(key, m, p);
+    // TTL切れ時のC再書込コスト (システムプロンプトは共通キャッシュ → scale=1)
+    const ttlWr = mp.cM * mp.wp * mp.wpd * p.testDays;
+    const cwCost = mp.cwM * mp.wp * totalReqs;
+    const st = mp.isGemini ? mp.cM * m.storage * totalHours : 0;
+    const rd = mp.crM * m.cachedInput * totalReqs;
+    const pr = mp.pM * m.input * totalReqs;
+    const ou = mp.oM * m.output * totalReqs;
+    const tot = cwCost + st + rd + pr + ou;
     const pReq = totalReqs > 0 ? tot / totalReqs : 0;
-    const noC = (p.cacheReadTokens + p.promptTokens) / 1e6 * m.input * totalReqs + ou;
-    return { ...m, id: key, isClaude: ic, isOpenAI: io, isNova: iNv, writePrice: wp, writesPerDay: wpd, write: wr, storageCost: st, read: rd, prompt: pr, outputCost: ou, total: tot, perReq: pReq, noCache: noC, savPct: (((noC - tot) / noC) * 100).toFixed(1), savUSD: noC - tot };
+    const noC = (mp.crM + mp.cwM + mp.pM) * m.input * totalReqs + ou;
+    return {
+      ...m, id: key, isClaude: mp.isClaude, isOpenAI: mp.isOpenAI, isNova: mp.isNova, isGemini: mp.isGemini,
+      writePrice: mp.wp, writesPerDay: mp.wpd, ttlWrite: ttlWr, cwWrite: cwCost, storageCost: st,
+      read: rd, prompt: pr, outputCost: ou, total: tot, perReq: pReq, noCache: noC,
+      savPct: noC > 0 ? (((noC - tot) / noC) * 100).toFixed(1) : '0.0', savUSD: noC - tot,
+    };
   });
   return { results, totalReqs, totalHours };
 }
 
 function computeTimeSeries(p) {
   const dailyReqs = (p.userCount * p.reqPerUser) / p.testDays;
-  const hitRate = (p.cacheHitRate ?? 100) / 100;
   return Object.entries(pricingData).map(([key, m]) => {
-    const ic = key.includes('claude');
-    const cM = p.cacheTokens / 1e6, rM = p.cacheReadTokens / 1e6, pM = p.promptTokens / 1e6, oM = p.outputTokens / 1e6;
-    const sc = p.isSharedCache ? 1 : p.userCount;
-    const wp = ic ? (p.claudeWriteType === '1h' ? m.cacheWrite1h : m.cacheWrite5m) : m.input;
-    const wpd = getWpd(key, p);
-    const dWrite = cM * wp * wpd * sc;
-    const dStorage = cM * m.storage * p.hoursPerDay * sc;
-    const dRead = rM * (m.cachedInput * hitRate + m.input * (1 - hitRate)) * dailyReqs;
-    const dPrompt = pM * m.input * dailyReqs;
-    const dOutput = oM * m.output * dailyReqs;
-    const daily = dWrite + dStorage + dRead + dPrompt + dOutput;
+    const mp = modelProps(key, m, p);
+    const dCwWrite = mp.cwM * mp.wp * dailyReqs;
+    const dStorage = mp.isGemini ? mp.cM * m.storage * p.hoursPerDay : 0;
+    const dRead = mp.crM * m.cachedInput * dailyReqs;
+    const dPrompt = mp.pM * m.input * dailyReqs;
+    const dOutput = mp.oM * m.output * dailyReqs;
+    const daily = dCwWrite + dStorage + dRead + dPrompt + dOutput;
     const pts = [];
     for (let d = 0; d <= p.testDays; d++) pts.push({ day: d, usd: daily * d });
     return { ...m, id: key, points: pts, daily, total: daily * p.testDays };
@@ -220,20 +209,37 @@ function computeMemoryResults(m) {
   const ltmStorageCost = m.useOverrideStrategy ? ltmStorageCostOverride : ltmStorageCostDefault;
   const ltmRetrievalCost = totalRetrievals * memoryPricing.ltmRetrieval;
 
-  // LLM extraction cost (Override strategy uses appendToPrompt + modelId → Bedrock inference charged separately)
-  let extractionCost = 0;
-  if (m.extractionModel && pricingData[m.extractionModel]) {
-    const em = pricingData[m.extractionModel];
-    const inMTok = (m.extractionInputTokens || 0) / 1e6;
-    const outMTok = (m.extractionOutputTokens || 0) / 1e6;
-    extractionCost = (inMTok * em.input + outMTok * em.output) * totalRoundtrips;
-  }
+  // LLM extraction cost per model (Override strategy uses appendToPrompt + modelId → Bedrock inference charged separately)
+  const inMTok = (m.extractionInputTokens || 0) / 1e6;
+  const outMTok = (m.extractionOutputTokens || 0) / 1e6;
+  const baseCostDefault = stmCost + ltmStorageCostDefault + ltmRetrievalCost;
+  const baseCostOverride = stmCost + ltmStorageCostOverride + ltmRetrievalCost;
+
+  const extractionResults = Object.entries(pricingData).map(([key, em]) => {
+    const extractionCost = (inMTok * em.input + outMTok * em.output) * totalRoundtrips;
+    const totalCostOverride = baseCostOverride + extractionCost;
+    const totalCost = m.useOverrideStrategy ? totalCostOverride : baseCostDefault;
+    return {
+      id: key, name: em.name, color: em.color,
+      inputPrice: em.input, outputPrice: em.output,
+      extractionCost,
+      totalCostOverride,
+      totalCost,
+      perRequest: totalRoundtrips > 0 ? totalCost / totalRoundtrips : 0,
+      perSession: totalSessions > 0 ? totalCost / totalSessions : 0,
+      perUserMonth: m.userCount > 0 ? totalCost / m.userCount : 0,
+      perUserYear: m.userCount > 0 ? (totalCost / m.userCount) * 12 : 0,
+    };
+  });
 
   // Default: AWS handles extraction automatically (included in storage price) → no separate LLM cost
   // Override: User provides custom extraction prompt → LLM inference cost applies
-  const totalCostDefault = stmCost + ltmStorageCostDefault + ltmRetrievalCost;
-  const totalCostOverride = stmCost + ltmStorageCostOverride + ltmRetrievalCost + extractionCost;
-  const totalCost = m.useOverrideStrategy ? totalCostOverride : totalCostDefault;
+  const totalCostDefault = baseCostDefault;
+  // For backward compat: use cheapest model for single-value fields
+  const cheapestOverride = extractionResults.reduce((a, b) => a.totalCostOverride < b.totalCostOverride ? a : b);
+  const extractionCost = cheapestOverride.extractionCost;
+  const totalCostOverride = cheapestOverride.totalCostOverride;
+  const totalCost = m.useOverrideStrategy ? cheapestOverride.totalCost : baseCostDefault;
 
   const perRequest = totalRoundtrips > 0 ? totalCost / totalRoundtrips : 0;
   const perSession = totalSessions > 0 ? totalCost / totalSessions : 0;
@@ -245,6 +251,7 @@ function computeMemoryResults(m) {
     stmCost, ltmStorageCost, ltmStorageCostDefault, ltmStorageCostOverride,
     ltmRetrievalCost, extractionCost, totalCost, totalCostDefault, totalCostOverride,
     perRequest, perSession, perUserMonth, perUserYear,
+    extractionResults, baseCostDefault, baseCostOverride,
   };
 }
 
@@ -336,18 +343,18 @@ function buildPieChart(slices) {
 
 function inputCls() { return 'mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400'; }
 
-function paramGrid(prefix, p, totalHours) {
+function paramGrid(prefix, p) {
   return '<div class="grid grid-cols-2 lg:grid-cols-4 gap-3">' +
     [
-      ['\u30AD\u30E3\u30C3\u30B7\u30E5\u91CF C', 'cacheTokens'],
-      ['\u518D\u5229\u7528\u30D2\u30C3\u30C8 R', 'cacheReadTokens'],
-      ['\u65B0\u898F\u30D7\u30ED\u30F3\u30D7\u30C8 P', 'promptTokens'],
-      ['\u56DE\u7B54\u30C8\u30FC\u30AF\u30F3 O', 'outputTokens'],
+      ['\u5165\u529B\u30C8\u30FC\u30AF\u30F3/req', 'promptTokens'],
+      ['\u51FA\u529B\u30C8\u30FC\u30AF\u30F3/req', 'outputTokens'],
+      ['\u30AD\u30E3\u30C3\u30B7\u30E5\u66F8\u8FBC/req', 'cacheWriteTokens'],
+      ['\u30AD\u30E3\u30C3\u30B7\u30E5\u8AAD\u8FBC/req', 'cacheReadTokens'],
+      ['\u521D\u56DE\u30AD\u30E3\u30C3\u30B7\u30E5\u66F8\u8FBC', 'cacheTokens'],
+      ['\u521D\u56DE\u66F8\u8FBC\u56DE\u6570/\u65E5', 'cacheWritesPerDay'],
       ['\u5229\u7528\u8005\u6570 U', 'userCount'],
       ['\u56DE\u6570/\u30E6\u30FC\u30B6\u30FC N', 'reqPerUser'],
       ['\u30C6\u30B9\u30C8\u65E5\u6570 D', 'testDays'],
-      ['Gemini\u4FDD\u6301 h/\u65E5' + (totalHours ? ' (\u8A08' + totalHours + 'h)' : ''), 'hoursPerDay'],
-      ['\u30AD\u30E3\u30C3\u30B7\u30E5\u30D2\u30C3\u30C8\u7387 %', 'cacheHitRate'],
     ].map(([label, key]) =>
       '<label class="block"><span class="text-xs text-slate-500">' + label + '</span>' +
       '<input type="number" data-prefix="' + prefix + '" data-key="' + key + '" value="' + p[key] + '" class="' + inputCls() + '" /></label>'
@@ -374,20 +381,9 @@ function memoryParamGrid(m) {
     '</div>';
 }
 
-function extractionModelOptions(m) {
-  const models = Object.entries(pricingData).map(([key, mod]) => ({ key, name: mod.name, input: mod.input, output: mod.output }));
-  return models.map(mod =>
-    '<option value="' + mod.key + '"' + (m.extractionModel === mod.key ? ' selected' : '') + '>' +
-      mod.name + ' (in:$' + mod.input.toFixed(2) + ' / out:$' + mod.output.toFixed(2) + '/MTok)' +
-    '</option>'
-  ).join('');
-}
-
 function extractionParamSection(m) {
   if (!m.useOverrideStrategy) return '';
-  return '<div class="grid grid-cols-2 lg:grid-cols-3 gap-3 mt-3">' +
-    '<label class="block"><span class="text-xs text-slate-500">\u62BD\u51FA\u30E2\u30C7\u30EB <span class="tip"><svg class="inline w-3.5 h-3.5 -mt-0.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="1.5"/><path stroke-width="1.5" d="M9.5 9.5a2.5 2.5 0 0 1 4.99.5c0 1.5-2.49 2-2.49 3M12 17h.01"/></svg><span class="tip-text" style="white-space:normal;width:300px;">appendToPrompt + modelId \u6307\u5B9A\u6642\u3001\u62BD\u51FA\u30FB\u7D71\u5408\u306E LLM \u63A8\u8AD6\u304C Bedrock \u6599\u91D1\u3068\u3057\u3066\u5225\u9014\u8AB2\u91D1\u3055\u308C\u308B</span></span></span>' +
-      '<select data-extraction-model class="' + inputCls() + '">' + extractionModelOptions(m) + '</select></label>' +
+  return '<div class="grid grid-cols-2 gap-3 mt-3">' +
     '<label class="block"><span class="text-xs text-slate-500">\u62BD\u51FA\u5165\u529B\u30C8\u30FC\u30AF\u30F3 <span class="tip"><svg class="inline w-3.5 h-3.5 -mt-0.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="1.5"/><path stroke-width="1.5" d="M9.5 9.5a2.5 2.5 0 0 1 4.99.5c0 1.5-2.49 2-2.49 3M12 17h.01"/></svg><span class="tip-text" style="white-space:normal;width:280px;">\u30B7\u30B9\u30C6\u30E0\u30D7\u30ED\u30F3\u30D7\u30C8 + appendToPrompt + \u4F1A\u8A71\u30B3\u30F3\u30C6\u30AD\u30B9\u30C8\u3002\u7D04 2,000 tok</span></span></span>' +
       '<input type="number" data-prefix="mem" data-key="extractionInputTokens" value="' + m.extractionInputTokens + '" class="' + inputCls() + '" /></label>' +
     '<label class="block"><span class="text-xs text-slate-500">\u62BD\u51FA\u51FA\u529B\u30C8\u30FC\u30AF\u30F3 <span class="tip"><svg class="inline w-3.5 h-3.5 -mt-0.5 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="1.5"/><path stroke-width="1.5" d="M9.5 9.5a2.5 2.5 0 0 1 4.99.5c0 1.5-2.49 2-2.49 3M12 17h.01"/></svg><span class="tip-text" style="white-space:normal;width:280px;">\u62BD\u51FA\u3055\u308C\u308B\u30EC\u30B3\u30FC\u30C9 (1\u301C3\u4EF6)\u3002\u7D04 200 tok</span></span></span>' +
@@ -395,25 +391,40 @@ function extractionParamSection(m) {
     '</div>';
 }
 
-function optionBtns(prefix, p) {
-  const autoWpd = calcClaudeWpd(p);
-  const currentWpd = getClaudeWpd(p);
-  const isAuto = !p.claudeWritesPerDay || p.claudeWritesPerDay <= 0;
-  return '<div class="flex flex-wrap gap-4 mt-3">' +
-    '<div class="flex items-center gap-2"><span class="text-xs text-slate-400">\u30AD\u30E3\u30C3\u30B7\u30E5:</span><div class="flex gap-1">' +
-      '<button data-prefix="' + prefix + '" data-opt="shared" class="px-3 py-1 text-xs rounded-md border ' + (p.isSharedCache ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">\u5171\u6709</button>' +
-      '<button data-prefix="' + prefix + '" data-opt="personal" class="px-3 py-1 text-xs rounded-md border ' + (!p.isSharedCache ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">\u500B\u5225</button>' +
-    '</div></div>' +
-    '<div class="flex items-center gap-2"><span class="text-xs text-slate-400">Claude Write:</span><div class="flex gap-1">' +
-      '<button data-prefix="' + prefix + '" data-wrt="5m" class="px-3 py-1 text-xs rounded-md border ' + (p.claudeWriteType === '5m' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">5\u5206</button>' +
-      '<button data-prefix="' + prefix + '" data-wrt="1h" class="px-3 py-1 text-xs rounded-md border ' + (p.claudeWriteType === '1h' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">1\u6642\u9593</button>' +
-    '</div></div>' +
-    '<div class="flex items-center gap-2"><span class="text-xs text-slate-400">Claude\u66F8\u8FBC\u56DE\u6570/\u65E5:</span>' +
-      '<input type="number" min="0" data-prefix="' + prefix + '" data-key="claudeWritesPerDay" value="' + (p.claudeWritesPerDay || 0) + '" class="w-16 border border-slate-200 rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/30" />' +
-      '<span class="text-[11px] ' + (isAuto ? 'text-blue-500' : 'text-slate-400') + '">' +
-        (isAuto ? '\u2192 \u81EA\u52D5: ' + autoWpd + '\u56DE/\u65E5' : '\u624B\u52D5\u8A2D\u5B9A (\u81EA\u52D5: ' + autoWpd + ')') +
-        (autoWpd <= 1 ? ' <span class="text-green-600">\u203B TTL\u5185\u306B\u30EA\u30AF\u30A8\u30B9\u30C8\u304C\u3042\u308B\u305F\u3081\u30AD\u30E3\u30C3\u30B7\u30E5\u7DAD\u6301</span>' : '') +
-      '</span>' +
+function modelSettingsSection(prefix, p) {
+  const totalHours = p.hoursPerDay * p.testDays;
+  const smallInput = 'w-20 border border-slate-200 rounded-md px-2 py-1 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/30';
+  return '<div class="mt-4 space-y-2">' +
+    '<p class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">\u30E2\u30C7\u30EB\u5225\u8A2D\u5B9A</p>' +
+    // Gemini
+    '<div class="flex items-center gap-3 px-3 py-2 border border-slate-100 rounded-lg">' +
+      '<span class="text-xs font-semibold w-16" style="color:#4285F4">Gemini</span>' +
+      '<span class="text-xs text-slate-400">\u4FDD\u6301\u6642\u9593:</span>' +
+      '<input type="number" data-prefix="' + prefix + '" data-key="hoursPerDay" value="' + p.hoursPerDay + '" class="' + smallInput + '" />' +
+      '<span class="text-xs text-slate-400">h/\u65E5' + (totalHours ? ' (\u8A08' + totalHours + 'h)' : '') + '</span>' +
+      '<span class="text-[10px] text-slate-300 ml-auto">\u6C38\u7D9A\u30AD\u30E3\u30C3\u30B7\u30E5\u30FB\u5171\u6709\u30FB Storage\u8AB2\u91D1\u3042\u308A</span>' +
+    '</div>' +
+    // Claude
+    '<div class="flex flex-wrap items-center gap-3 px-3 py-2 border border-slate-100 rounded-lg">' +
+      '<span class="text-xs font-semibold w-16" style="color:#D97706">Claude</span>' +
+      '<span class="text-xs text-slate-400">Write TTL:</span>' +
+      '<div class="flex gap-1">' +
+        '<button data-prefix="' + prefix + '" data-wrt="5m" class="px-2 py-0.5 text-[11px] rounded border ' + (p.claudeWriteType === '5m' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">5\u5206</button>' +
+        '<button data-prefix="' + prefix + '" data-wrt="1h" class="px-2 py-0.5 text-[11px] rounded border ' + (p.claudeWriteType === '1h' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">1\u6642\u9593</button>' +
+      '</div>' +
+      '<span class="text-[10px] text-slate-300 ml-auto">\u500B\u5225\u30AD\u30E3\u30C3\u30B7\u30E5\u30FB\u4E0A\u4E57\u305B\u66F8\u8FBC\u30FB Storage\u7121\u6599</span>' +
+    '</div>' +
+    // OpenAI
+    '<div class="flex items-center gap-3 px-3 py-2 border border-slate-100 rounded-lg">' +
+      '<span class="text-xs font-semibold w-16" style="color:#10A37F">OpenAI</span>' +
+      '<span class="text-[11px] text-slate-400">\u81EA\u52D5\u30AD\u30E3\u30C3\u30B7\u30E5 (~5\u5206 TTL, sliding window)</span>' +
+      '<span class="text-[10px] text-slate-300 ml-auto">\u500B\u5225\u30AD\u30E3\u30C3\u30B7\u30E5\u30FB\u66F8\u8FBC=Input\u540C\u984D\u30FB Storage\u7121\u6599</span>' +
+    '</div>' +
+    // Nova
+    '<div class="flex items-center gap-3 px-3 py-2 border border-slate-100 rounded-lg">' +
+      '<span class="text-xs font-semibold w-16" style="color:#FF9900">Nova</span>' +
+      '<span class="text-[11px] text-slate-400">5\u5206 TTL sliding window</span>' +
+      '<span class="text-[10px] text-slate-300 ml-auto">\u500B\u5225\u30AD\u30E3\u30C3\u30B7\u30E5\u30FB\u66F8\u8FBC=Input\u540C\u984D\u30FB Storage\u7121\u6599</span>' +
     '</div>' +
   '</div>';
 }
@@ -425,208 +436,327 @@ function modelHeaders(results) {
 // ── Excel Download ─────────────────────────
 function downloadExcel() {
   var p = state.activeTab === 'scenario' ? state.scenarios[state.activeScenario] : state.sim;
-  var mKeys = Object.keys(pricingData);
-  var mods = mKeys.map(function(k) { return pricingData[k]; });
-  var cols = ['C','D','E','F','G','H','I','J'];
   var wb = XLSX.utils.book_new();
-  var ws = {};
-  function s(a,v) { ws[a] = {t:'s', v:String(v)}; }
-  function n(a,v) { ws[a] = {t:'n', v:Number(v)}; }
-  function fm(a,formula) { ws[a] = {t:'n', f:formula}; }
+  var P = "'\u30D1\u30E9\u30E1\u30FC\u30BF\u30FC'!$B$";
 
-  // Row 1: Title
-  s('A1', 'AI Cost Strategy Simulator');
-
-  // Row 3-15: Parameters
-  s('A3', '【パラメーター】');
+  // ── パラメーター sheet ──────────────────
+  var ps = {};
+  function ps_s(a,v) { ps[a] = {t:'s', v:String(v)}; }
+  function ps_n(a,v) { ps[a] = {t:'n', v:Number(v)}; }
+  function ps_f(a,f) { ps[a] = {t:'n', f:f}; }
+  ps_s('A1', 'AI Cost Strategy Simulator \u2014 \u30D1\u30E9\u30E1\u30FC\u30BF\u30FC');
+  ps_s('A3', '\u3010\u30D1\u30E9\u30E1\u30FC\u30BF\u30FC\u3011');
   var paramList = [
-    ['為替レート (¥/$)', state.exchangeRate],
-    ['キャッシュ書込トークン (C)', p.cacheTokens],
-    ['キャッシュ再利用トークン (R)', p.cacheReadTokens],
-    ['新規プロンプトトークン (P)', p.promptTokens],
-    ['回答トークン (O)', p.outputTokens],
-    ['利用者数 (U)', p.userCount],
-    ['回数/ユーザー (N)', p.reqPerUser],
-    ['テスト日数 (D)', p.testDays],
-    ['稼働時間/日 (h)', p.hoursPerDay],
-    ['キャッシュ共有 (1=共有, 0=個別)', p.isSharedCache ? 1 : 0],
-    ['Claude Write TTL (1=1h, 0=5m)', p.claudeWriteType === '1h' ? 1 : 0],
-    ['キャッシュヒット率 (%)', p.cacheHitRate != null ? p.cacheHitRate : 100],
-    ['Claude書込回数/日 (0=自動)', p.claudeWritesPerDay || 0],
-    ['Claude書込回数/日 (実効値)', getClaudeWpd(p)],
+    ['\u70BA\u66FF\u30EC\u30FC\u30C8 (\u00A5/$)', state.exchangeRate],          // B4
+    ['\u5165\u529B\u30C8\u30FC\u30AF\u30F3/req (P)', p.promptTokens],           // B5
+    ['\u51FA\u529B\u30C8\u30FC\u30AF\u30F3/req (O)', p.outputTokens],           // B6
+    ['\u30AD\u30E3\u30C3\u30B7\u30E5\u66F8\u8FBC/req (CW)', p.cacheWriteTokens || 0], // B7
+    ['\u30AD\u30E3\u30C3\u30B7\u30E5\u8AAD\u8FBC/req (CR)', p.cacheReadTokens || 0], // B8
+    ['\u521D\u56DE\u30AD\u30E3\u30C3\u30B7\u30E5\u66F8\u8FBC (C)', p.cacheTokens],   // B9
+    ['\u5229\u7528\u8005\u6570 (U)', p.userCount],                       // B10
+    ['\u56DE\u6570/\u30E6\u30FC\u30B6\u30FC (N)', p.reqPerUser],                 // B11
+    ['\u30C6\u30B9\u30C8\u65E5\u6570 (D)', p.testDays],                     // B12
+    ['\u7A3C\u52D5\u6642\u9593/\u65E5 (h)', p.hoursPerDay],                  // B13
+    ['Claude Write TTL (1=1h, 0=5m)', p.claudeWriteType === '1h' ? 1 : 0], // B14
+    ['\u521D\u56DE\u66F8\u8FBC\u56DE\u6570/\u65E5 (0=\u81EA\u52D5)', p.cacheWritesPerDay || 0], // B15
+    ['\u521D\u56DE\u66F8\u8FBC\u56DE\u6570/\u65E5 (\u5B9F\u52B9\u5024)', getWpd('claude', p)],     // B16
   ];
-  paramList.forEach(function(row, i) { s('A'+(4+i), row[0]); n('B'+(4+i), row[1]); });
+  paramList.forEach(function(row, i) { ps_s('A'+(4+i), row[0]); ps_n('B'+(4+i), row[1]); });
+  ps_s('A18', '\u3010\u5C0E\u51FA\u5024\u3011');
+  ps_s('A19', '\u7DCF\u30EA\u30AF\u30A8\u30B9\u30C8\u6570'); ps_f('B19', 'B10*B11');
+  ps_s('A20', '\u7DCF\u4FDD\u7BA1\u6642\u9593 (h)'); ps_f('B20', 'B13*B12');
+  ps_s('D3', '\u5099\u8003');
+  ps_s('D7', 'Gemini\u306F0\u306B\u81EA\u52D5\u8A2D\u5B9A');
+  ps_s('D8', 'Gemini\u306F\u521D\u56DE\u66F8\u8FBC\u5024\u3092\u4F7F\u7528');
+  ps_s('D14', '1=1\u6642\u9593TTL, 0=5\u5206TTL');
+  ps_s('D15', '0=\u30EA\u30AF\u30A8\u30B9\u30C8\u983B\u5EA6\u304B\u3089\u81EA\u52D5\u8A08\u7B97, >0=\u624B\u52D5\u6307\u5B9A');
+  ps['!ref'] = 'A1:D20';
+  ps['!cols'] = [{wch:32},{wch:14},{wch:2},{wch:40}];
+  XLSX.utils.book_append_sheet(wb, ps, '\u30D1\u30E9\u30E1\u30FC\u30BF\u30FC');
 
-  // Row 19-22: Derived values
-  s('A19', '【導出値】');
-  s('A20', '総リクエスト数'); fm('B20', 'B9*B10');
-  s('A21', '総保管時間 (h)'); fm('B21', 'B12*B11');
-  s('A22', 'スケール倍率');   fm('B22', 'IF(B13=1,1,B9)');
+  // ── Platform sheets (Gemini / Claude / OpenAI / Bedrock) ──
+  var platforms = [
+    { name: 'Gemini', keys: ['gemini25Flash','gemini30Flash','gemini3Pro'],
+      useWriteFormula: false, wpd: function() { return 1; },
+      remarks: ['\u6C38\u7D9A\u30AD\u30E3\u30C3\u30B7\u30E5 \u2192 \u66F8\u8FBC1\u56DE/\u65E5', 'Storage\u8AB2\u91D1\u3042\u308A'] },
+    { name: 'Claude', keys: ['claude45Haiku','claude45Sonnet','claude45Opus'],
+      useWriteFormula: true, wpd: function() { return getWpd('claude', p); },
+      remarks: ['TTL\u306B\u5FDC\u3058\u3066Write\u5358\u4FA1\u5207\u66FF', 'Sliding window: TTL\u5185\u30EA\u30AF\u30A8\u30B9\u30C8\u3067\u7DAD\u6301', 'Storage\u8AB2\u91D1\u306A\u3057'] },
+    { name: 'OpenAI', keys: ['gpt5Mini','gpt5'],
+      useWriteFormula: false, wpd: function() { return getWpd('gpt', p); },
+      remarks: ['\u81EA\u52D5\u30AD\u30E3\u30C3\u30B7\u30E5 (~5\u5206TTL)', 'Write=Input\u540C\u984D', 'Storage\u8AB2\u91D1\u306A\u3057'] },
+    { name: 'Bedrock', keys: ['novaMicro','novaLite','novaPro'],
+      useWriteFormula: false, wpd: function() { return getWpd('nova', p); },
+      remarks: ['5\u5206TTL sliding window', 'Write=Input\u540C\u984D', 'Storage\u8AB2\u91D1\u306A\u3057'] },
+  ];
+  var summaryRefs = [];
+  var colPool = ['C','D','E','F','G'];
 
-  // Row 24-30: Unit price table
-  s('A24', '【単価表 ($/MTok)】');
-  mods.forEach(function(m,i) { s(cols[i]+'24', m.name); });
-  s('A25', '入力 (Input)');
-  s('A26', '書込 (Write)');
-  s('A27', '再利用 (Cached Read)');
-  s('A28', '出力 (Output)');
-  s('A29', '保管 (Storage/h)');
-  s('A30', '書込回数/日');
-  mods.forEach(function(m,i) {
-    var c = cols[i], ic = mKeys[i].includes('claude'), io = mKeys[i].includes('gpt');
-    n(c+'25', m.input);
-    if (ic) { fm(c+'26', 'IF($B$14=1,'+m.cacheWrite1h+','+m.cacheWrite5m+')'); }
-    else    { n(c+'26', m.input); }
-    n(c+'27', m.cachedInput);
-    n(c+'28', m.output);
-    n(c+'29', m.storage);
-    n(c+'30', getWpd(mKeys[i], p));
+  platforms.forEach(function(plat) {
+    var ws = {};
+    function s(a,v) { ws[a] = {t:'s', v:String(v)}; }
+    function n(a,v) { ws[a] = {t:'n', v:Number(v)}; }
+    function fm(a,f) { ws[a] = {t:'n', f:f}; }
+    var mods = plat.keys.filter(function(k) { return pricingData[k]; })
+                        .map(function(k) { return { key: k, m: pricingData[k] }; });
+    var cols = colPool.slice(0, mods.length);
+    var remarkCol = colPool[mods.length];
+
+    // Row 1: Title
+    s('A1', plat.name);
+
+    // Row 3-9: Unit prices
+    s('A3', '\u3010\u5358\u4FA1 ($/MTok)\u3011');
+    mods.forEach(function(o,i) { s(cols[i]+'3', o.m.name); });
+    s('A4', '\u5165\u529B (Input)');
+    s('A5', '\u66F8\u8FBC (Write)');
+    s('A6', '\u518D\u5229\u7528 (Cached Read)');
+    s('A7', '\u51FA\u529B (Output)');
+    s('A8', '\u4FDD\u7BA1 (Storage/h)');
+    s('A9', '\u66F8\u8FBC\u56DE\u6570/\u65E5');
+    mods.forEach(function(o, i) {
+      var c = cols[i];
+      n(c+'4', o.m.input);
+      if (plat.useWriteFormula) {
+        fm(c+'5', 'IF('+P+'14=1,'+o.m.cacheWrite1h+','+o.m.cacheWrite5m+')');
+      } else {
+        n(c+'5', o.m.input);
+      }
+      n(c+'6', o.m.cachedInput);
+      n(c+'7', o.m.output);
+      n(c+'8', o.m.storage);
+      n(c+'9', plat.wpd());
+    });
+
+    // Row 11-17: Cost breakdown (USD)
+    s('A11', '\u3010\u30B3\u30B9\u30C8\u5185\u8A33 (USD)\u3011');
+    mods.forEach(function(o,i) { s(cols[i]+'11', o.m.name); });
+    s('A12', '\u30AD\u30E3\u30C3\u30B7\u30E5\u518D\u4F5C\u6210 (C\u00D7TTL)');
+    s('A13', 'Storage (\u4FDD\u7BA1\u6599)');
+    s('A14', 'Read (\u30AD\u30E3\u30C3\u30B7\u30E5\u8AAD\u51FA)');
+    s('A15', 'CW Write (\u30EA\u30AF\u30A8\u30B9\u30C8\u66F8\u8FBC)');
+    s('A16', 'Prompt (\u65B0\u898F\u5165\u529B)');
+    s('A17', 'Output (\u51FA\u529B)');
+    mods.forEach(function(o, i) {
+      var c = cols[i];
+      var isGemini = plat.name === 'Gemini';
+      // Write = (C/1M) * WritePrice * WPD * Days * Scale
+      if (isGemini) {
+        fm(c+'12', '('+P+'9/1000000)*'+c+'5*1');
+      } else {
+        fm(c+'12', '('+P+'9/1000000)*'+c+'5*'+c+'9*'+P+'12');
+      }
+      // Storage = (C/1M) * StoragePrice * TotalHours (Geminiのみ実質発生、他はstorage=0)
+      fm(c+'13', '('+P+'9/1000000)*'+c+'8*'+P+'20');
+      // Read = (CR/1M) * CachedInput * TotalReqs (Gemini uses C instead of CR)
+      if (isGemini) {
+        fm(c+'14', '('+P+'9/1000000)*'+c+'6*'+P+'19');
+      } else {
+        fm(c+'14', '('+P+'8/1000000)*'+c+'6*'+P+'19');
+      }
+      // CW Write = (CW/1M) * WritePrice * TotalReqs (0 for Gemini)
+      if (isGemini) {
+        n(c+'15', 0);
+      } else {
+        fm(c+'15', '('+P+'7/1000000)*'+c+'5*'+P+'19');
+      }
+      // Prompt = (P/1M) * Input * TotalReqs
+      fm(c+'16', '('+P+'5/1000000)*'+c+'4*'+P+'19');
+      // Output = (O/1M) * Output * TotalReqs
+      fm(c+'17', '('+P+'6/1000000)*'+c+'7*'+P+'19');
+    });
+
+    // Row 19-22: Totals
+    s('A19', '\u3010\u5408\u8A08\u3011');
+    mods.forEach(function(o,i) { s(cols[i]+'19', o.m.name); });
+    s('A20', 'USD \u5408\u8A08');
+    s('A21', 'JPY \u5408\u8A08');
+    s('A22', '1\u30EA\u30AF\u30A8\u30B9\u30C8\u5358\u4FA1 (JPY)');
+    mods.forEach(function(o, i) {
+      var c = cols[i];
+      fm(c+'20', 'SUM('+c+'12:'+c+'17)');
+      fm(c+'21', c+'20*'+P+'4');
+      fm(c+'22', 'IF('+P+'19>0,'+c+'21/'+P+'19,0)');
+    });
+
+    // Row 24-29: Cache effect
+    s('A24', '\u3010\u30AD\u30E3\u30C3\u30B7\u30E5\u52B9\u679C\u3011');
+    mods.forEach(function(o,i) { s(cols[i]+'24', o.m.name); });
+    s('A25', '\u30AD\u30E3\u30C3\u30B7\u30E5\u306A\u3057 (USD)');
+    s('A26', '\u30AD\u30E3\u30C3\u30B7\u30E5\u3042\u308A (USD)');
+    s('A27', '\u524A\u6E1B\u984D (USD)');
+    s('A28', '\u524A\u6E1B\u984D (JPY)');
+    s('A29', '\u524A\u6E1B\u7387');
+    mods.forEach(function(o, i) {
+      var c = cols[i];
+      var isGemini = plat.name === 'Gemini';
+      // No-cache = (CR + CW + P) / 1M * Input * TotalReqs + Output
+      if (isGemini) {
+        fm(c+'25', '(('+P+'9+'+P+'5)/1000000)*'+c+'4*'+P+'19+'+c+'17');
+      } else {
+        fm(c+'25', '(('+P+'8+'+P+'7+'+P+'5)/1000000)*'+c+'4*'+P+'19+'+c+'17');
+      }
+      fm(c+'26', c+'20');
+      fm(c+'27', c+'25-'+c+'26');
+      fm(c+'28', c+'27*'+P+'4');
+      ws[c+'29'] = {t:'n', f:'IF('+c+'25>0,('+c+'25-'+c+'26)/'+c+'25,0)', z:'0.0%'};
+    });
+
+    // Remarks
+    if (remarkCol) {
+      s(remarkCol+'3', '\u5099\u8003');
+      plat.remarks.forEach(function(r, i) { s(remarkCol+(4+i), r); });
+      s(remarkCol+'14', 'Read = CR \u00D7 CachedInput (Gemini\u306FC)');
+      s(remarkCol+'15', 'CW: \u30EA\u30AF\u30A8\u30B9\u30C8\u6BCE\u306E\u30AD\u30E3\u30C3\u30B7\u30E5\u66F8\u8FBC (Gemini\u306F0)');
+      s(remarkCol+'25', '\u30AD\u30E3\u30C3\u30B7\u30E5\u672A\u4F7F\u7528: CR+CW+P\u3092Input\u4FA1\u683C\u3067\u8A08\u7B97');
+    }
+
+    // Track for summary
+    mods.forEach(function(o, i) {
+      summaryRefs.push({ name: o.m.name, sheet: plat.name, col: cols[i] });
+    });
+
+    // Sheet config
+    ws['!ref'] = 'A1:'+(remarkCol||cols[cols.length-1])+'29';
+    var cw = [{wch:28},{wch:2}];
+    mods.forEach(function() { cw.push({wch:18}); });
+    if (remarkCol) cw.push({wch:36});
+    ws['!cols'] = cw;
+    XLSX.utils.book_append_sheet(wb, ws, plat.name);
   });
 
-  // Row 32-37: Cost breakdown (USD)
-  s('A32', '【コスト内訳 (USD)】');
-  mods.forEach(function(m,i) { s(cols[i]+'32', m.name); });
-  s('A33', 'Write'); s('A34', 'Storage'); s('A35', 'Read'); s('A36', 'Prompt'); s('A37', 'Output');
-  mods.forEach(function(m,i) {
-    var c = cols[i];
-    fm(c+'33', '($B$5/1000000)*'+c+'26*'+c+'30*$B$11*$B$22');
-    fm(c+'34', '($B$5/1000000)*'+c+'29*$B$21*$B$22');
-    fm(c+'35', '($B$6/1000000)*('+c+'27*$B$15/100+'+c+'25*(1-$B$15/100))*$B$20');
-    fm(c+'36', '($B$7/1000000)*'+c+'25*$B$20');
-    fm(c+'37', '($B$8/1000000)*'+c+'28*$B$20');
+  // ── サマリー sheet ──────────────────────
+  var ss = {};
+  function ss_s(a,v) { ss[a] = {t:'s', v:String(v)}; }
+  function ss_f(a,f) { ss[a] = {t:'n', f:f}; }
+  ss_s('A1', '\u5168\u30E2\u30C7\u30EB\u6BD4\u8F03\u30B5\u30DE\u30EA\u30FC');
+  ss_s('A3', '\u30E2\u30C7\u30EB\u540D');
+  ss_s('B3', 'USD \u5408\u8A08');
+  ss_s('C3', 'JPY \u5408\u8A08');
+  ss_s('D3', '1req\u5358\u4FA1 (JPY)');
+  ss_s('E3', '\u524A\u6E1B\u7387');
+  summaryRefs.forEach(function(ref, i) {
+    var row = 4 + i;
+    var sn = "'"+ref.sheet+"'!"+ref.col;
+    ss_s('A'+row, ref.name);
+    ss_f('B'+row, sn+'20');
+    ss_f('C'+row, sn+'21');
+    ss_f('D'+row, sn+'22');
+    ss['E'+row] = {t:'n', f:sn+'29', z:'0.0%'};
   });
+  ss['!ref'] = 'A1:E'+(3+summaryRefs.length);
+  ss['!cols'] = [{wch:24},{wch:16},{wch:16},{wch:18},{wch:12}];
+  XLSX.utils.book_append_sheet(wb, ss, '\u30B5\u30DE\u30EA\u30FC');
 
-  // Row 39-42: Totals
-  s('A39', '【合計】');
-  mods.forEach(function(m,i) { s(cols[i]+'39', m.name); });
-  s('A40', 'USD 合計'); s('A41', 'JPY 合計'); s('A42', '1リクエスト単価 (JPY)');
-  mods.forEach(function(m,i) {
-    var c = cols[i];
-    fm(c+'40', 'SUM('+c+'33:'+c+'37)');
-    fm(c+'41', c+'40*$B$4');
-    fm(c+'42', 'IF($B$20>0,'+c+'41/$B$20,0)');
-  });
-
-  // Row 44-49: Cache effect
-  s('A44', '【キャッシュ効果】');
-  mods.forEach(function(m,i) { s(cols[i]+'44', m.name); });
-  s('A45', 'キャッシュなし合計 (USD)');
-  s('A46', 'キャッシュあり合計 (USD)');
-  s('A47', '削減額 (USD)'); s('A48', '削減額 (JPY)'); s('A49', '削減率');
-  mods.forEach(function(m,i) {
-    var c = cols[i];
-    fm(c+'45', '(($B$6+$B$7)/1000000)*'+c+'25*$B$20+'+c+'37');
-    fm(c+'46', c+'40');
-    fm(c+'47', c+'45-'+c+'46');
-    fm(c+'48', c+'47*$B$4');
-    ws[c+'49'] = {t:'n', f:'IF('+c+'45>0,('+c+'45-'+c+'46)/'+c+'45,0)', z:'0.0%'};
-  });
-
-  // Remarks (column K)
-  s('K3', '備考');
-  s('K13', '1=全ユーザー共有, 0=ユーザー毎に個別');
-  s('K14', '1=1時間TTL, 0=5分TTL');
-  s('K16', '0=リクエスト頻度から自動計算, >0=手動指定');
-  s('K17', 'TTL内にリクエストがあればキャッシュ維持(sliding window)');
-  s('K22', '共有=1, 個別=ユーザー数');
-  s('K26', 'Claude: TTLに応じて単価切替, OpenAI: Input同額');
-  s('K29', 'Geminiのみ課金 (Claude/OpenAIは0)');
-  s('K30', 'Claude: sliding window TTL, OpenAI: 自動~5m, Gemini: 永続=1回/日');
-  s('K35', 'ヒット率で Cached/Input 価格を加重平均');
-  s('K45', 'キャッシュ未使用: (R+P)を全てInput価格で計算');
-  s('K49', '(なし - あり) / なし');
-
-  // Sheet config
-  ws['!ref'] = 'A1:K49';
-  ws['!cols'] = [{wch:32},{wch:14},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:16},{wch:32}];
-  var sheetName = state.activeTab === 'scenario' ? state.scenarios[state.activeScenario].name : 'シミュレーション';
-  XLSX.utils.book_append_sheet(wb, ws, sheetName);
-
-  // AgentCore Memory sheet
+  // AgentCore Memory sheet — all-model comparison
   var ms = {};
   function ms_s(a,v) { ms[a] = {t:'s', v:String(v)}; }
   function ms_n(a,v) { ms[a] = {t:'n', v:Number(v)}; }
   function ms_f(a,formula) { ms[a] = {t:'n', f:formula}; }
   var mm = state.mem;
   var isFirstOnly = mm.ltmRetrievalTiming === 'first';
-  ms_s('A1', 'AgentCore Memory コストシミュレーション');
+  var memMKeys = Object.keys(pricingData);
+  var memMods = memMKeys.map(function(k) { return pricingData[k]; });
+  // Column mapping: A=labels, B=params, C..M+=model columns for Override section
+  var memCols = ['C','D','E','F','G','H','I','J','K','L','M','N','O'];
+  ms_s('A1', 'AgentCore Memory \u30B3\u30B9\u30C8\u30B7\u30DF\u30E5\u30EC\u30FC\u30B7\u30E7\u30F3');
 
   // B4:B11 — Parameters
-  ms_s('A3', '【パラメーター】');
+  ms_s('A3', '\u3010\u30D1\u30E9\u30E1\u30FC\u30BF\u30FC\u3011');
   var memParams = [
-    ['為替レート (¥/$)', state.exchangeRate],        // B4
-    ['ユーザー数', mm.userCount],                     // B5
-    ['セッション/ユーザー/月', mm.sessionsPerUser],   // B6
-    ['リクエスト/セッション', mm.roundtripsPerSession],// B7
-    ['LTM検索/リクエスト', mm.retrievalsPerSession],  // B8
-    ['LTMレコード/ユーザー', mm.recordsPerUser],      // B9
-    ['STMイベント/リクエスト', mm.stmEventsPerRequest || 2], // B10
-    ['LTM検索タイミング (1=初回のみ)', isFirstOnly ? 1 : 0], // B11
+    ['\u70BA\u66FF\u30EC\u30FC\u30C8 (\u00A5/$)', state.exchangeRate],        // B4
+    ['\u30E6\u30FC\u30B6\u30FC\u6570', mm.userCount],                     // B5
+    ['\u30BB\u30C3\u30B7\u30E7\u30F3/\u30E6\u30FC\u30B6\u30FC/\u6708', mm.sessionsPerUser],   // B6
+    ['\u30EA\u30AF\u30A8\u30B9\u30C8/\u30BB\u30C3\u30B7\u30E7\u30F3', mm.roundtripsPerSession],// B7
+    ['LTM\u691C\u7D22/\u30EA\u30AF\u30A8\u30B9\u30C8', mm.retrievalsPerSession],  // B8
+    ['LTM\u30EC\u30B3\u30FC\u30C9/\u30E6\u30FC\u30B6\u30FC', mm.recordsPerUser],      // B9
+    ['STM\u30A4\u30D9\u30F3\u30C8/\u30EA\u30AF\u30A8\u30B9\u30C8', mm.stmEventsPerRequest || 2], // B10
+    ['LTM\u691C\u7D22\u30BF\u30A4\u30DF\u30F3\u30B0 (1=\u521D\u56DE\u306E\u307F)', isFirstOnly ? 1 : 0], // B11
   ];
   memParams.forEach(function(row, i) { ms_s('A'+(4+i), row[0]); ms_n('B'+(4+i), row[1]); });
   ms_s('A12', 'Strategy'); ms_s('B12', mm.useOverrideStrategy ? 'Override' : 'Default');
-  // Extraction parameters — model name triggers VLOOKUP from LLM単価 sheet
-  var exModel = mm.extractionModel && pricingData[mm.extractionModel] ? pricingData[mm.extractionModel] : null;
-  ms_s('A13', '抽出モデル ▼');              ms_s('B13', exModel ? exModel.name : 'なし');      // B13 — change this to switch model
-  ms_s('A14', '抽出入力トークン');          ms_n('B14', mm.extractionInputTokens || 0);        // B14
-  ms_s('A15', '抽出出力トークン');          ms_n('B15', mm.extractionOutputTokens || 0);       // B15
-  ms_s('A16', '抽出入力単価 ($/MTok)');     ms_f('B16', "IFERROR(VLOOKUP(B13,'LLM単価'!A:B,2,FALSE),0)"); // B16 — auto from LLM単価
-  ms_s('A17', '抽出出力単価 ($/MTok)');     ms_f('B17', "IFERROR(VLOOKUP(B13,'LLM単価'!A:C,3,FALSE),0)"); // B17 — auto from LLM単価
+  ms_s('A13', '\u62BD\u51FA\u5165\u529B\u30C8\u30FC\u30AF\u30F3');   ms_n('B13', mm.extractionInputTokens || 0);   // B13
+  ms_s('A14', '\u62BD\u51FA\u51FA\u529B\u30C8\u30FC\u30AF\u30F3');   ms_n('B14', mm.extractionOutputTokens || 0);  // B14
 
-  // B19:B22 — Unit prices (per 1000)
-  ms_s('A19', '【単価 ($/1000)】');
-  ms_s('A20', 'STM イベント');              ms_n('B20', 0.25);  // B20
-  ms_s('A21', 'LTM ストレージ Default');    ms_n('B21', 0.75);  // B21
-  ms_s('A22', 'LTM ストレージ Override');   ms_n('B22', 0.25);  // B22
-  ms_s('A23', 'LTM 検索');                  ms_n('B23', 0.50);  // B23
+  // B16:B19 — Unit prices (per 1000)
+  ms_s('A16', '\u3010\u5358\u4FA1 ($/1000)\u3011');
+  ms_s('A17', 'STM \u30A4\u30D9\u30F3\u30C8');              ms_n('B17', 0.25);  // B17
+  ms_s('A18', 'LTM \u30B9\u30C8\u30EC\u30FC\u30B8 Default');    ms_n('B18', 0.75);  // B18
+  ms_s('A19', 'LTM \u30B9\u30C8\u30EC\u30FC\u30B8 Override');   ms_n('B19', 0.25);  // B19
+  ms_s('A20', 'LTM \u691C\u7D22');                  ms_n('B20', 0.50);  // B20
 
-  // B25:B30 — Volumes (formulas)
-  ms_s('A25', '【ボリューム】');
-  ms_s('A26', '総セッション');      ms_f('B26', 'B5*B6');                                // userCount * sessionsPerUser
-  ms_s('A27', '総リクエスト');      ms_f('B27', 'B26*B7');                                // totalSessions * roundtripsPerSession
-  ms_s('A28', 'STM イベント数');    ms_f('B28', 'B27*B10');                                // totalRoundtrips * stmEventsPerRequest
-  ms_s('A29', 'LTM 検索数');       ms_f('B29', 'IF(B11=1,B26*B8,B27*B8)');              // first: sessions*ret, every: roundtrips*ret
-  ms_s('A30', 'LTM レコード数');    ms_f('B30', 'B5*B9');                                // userCount * recordsPerUser
+  // B22:B27 — Volumes (formulas)
+  ms_s('A22', '\u3010\u30DC\u30EA\u30E5\u30FC\u30E0\u3011');
+  ms_s('A23', '\u7DCF\u30BB\u30C3\u30B7\u30E7\u30F3');      ms_f('B23', 'B5*B6');
+  ms_s('A24', '\u7DCF\u30EA\u30AF\u30A8\u30B9\u30C8');      ms_f('B24', 'B23*B7');
+  ms_s('A25', 'STM \u30A4\u30D9\u30F3\u30C8\u6570');    ms_f('B25', 'B24*B10');
+  ms_s('A26', 'LTM \u691C\u7D22\u6570');       ms_f('B26', 'IF(B11=1,B23*B8,B24*B8)');
+  ms_s('A27', 'LTM \u30EC\u30B3\u30FC\u30C9\u6570');    ms_f('B27', 'B5*B9');
 
-  // B32:C41 — Cost breakdown (formulas)
-  ms_s('A32', '【コスト内訳 (月額)】');
-  ms_s('A33', ''); ms_s('B33', 'USD'); ms_s('C33', 'JPY');
-  ms_s('A34', 'STM イベント');      ms_f('B34', 'B28*B20/1000');          ms_f('C34', 'B34*B4');
-  ms_s('A35', 'LTM ストレージ');    ms_f('B35', 'IF(B12="Override",B30*B22/1000,B30*B21/1000)'); ms_f('C35', 'B35*B4');
-  ms_s('A36', 'LTM 検索');         ms_f('B36', 'B29*B23/1000');          ms_f('C36', 'B36*B4');
+  // Row 29: Default cost breakdown (model-independent)
+  ms_s('A29', '\u3010Default \u30B3\u30B9\u30C8\u5185\u8A33 (USD)\u3011');
+  ms_s('A30', 'STM \u30A4\u30D9\u30F3\u30C8');      ms_f('B30', 'B25*B17/1000');
+  ms_s('A31', 'LTM \u30B9\u30C8\u30EC\u30FC\u30B8');    ms_f('B31', 'B27*B18/1000');
+  ms_s('A32', 'LTM \u691C\u7D22');         ms_f('B32', 'B26*B20/1000');
+  ms_s('A33', 'Default \u5408\u8A08');     ms_f('B33', 'B30+B31+B32');
 
-  // LLM extraction cost — formula: (inputTok/1M * inputPrice + outputTok/1M * outputPrice) * totalRoundtrips
-  // Only applies when Override strategy is selected
-  ms_s('A37', 'LLM 抽出');
-  ms_f('B37', 'IF(B12="Override",(B14/1000000*B16+B15/1000000*B17)*B27,0)');
-  ms_f('C37', 'B37*B4');
+  // Row 35: Override cost — all models comparison
+  ms_s('A35', '\u3010Override \u30B3\u30B9\u30C8\u5185\u8A33 \u2014 \u5168\u30E2\u30C7\u30EB\u6BD4\u8F03 (USD)\u3011');
+  ms_s('A36', '');
+  memMods.forEach(function(mod, i) { ms_s(memCols[i]+'36', mod.name); });
+  // Row 37: LLM input price per model
+  ms_s('A37', '\u62BD\u51FA\u5165\u529B\u5358\u4FA1 ($/MTok)');
+  memMods.forEach(function(mod, i) { ms_n(memCols[i]+'37', mod.input); });
+  // Row 38: LLM output price per model
+  ms_s('A38', '\u62BD\u51FA\u51FA\u529B\u5358\u4FA1 ($/MTok)');
+  memMods.forEach(function(mod, i) { ms_n(memCols[i]+'38', mod.output); });
+  // Row 39: Base cost (STM + LTM Storage Override + LTM Retrieval) — shared
+  ms_s('A39', 'Memory\u57FA\u672C\u30B3\u30B9\u30C8');
+  ms_f('B39', 'B30+B27*B19/1000+B32');
+  // Row 40: LLM extraction cost per model
+  ms_s('A40', 'LLM \u62BD\u51FA\u30B3\u30B9\u30C8');
+  memMods.forEach(function(mod, i) {
+    var c = memCols[i];
+    ms_f(c+'40', '($B$13/1000000*'+c+'37+$B$14/1000000*'+c+'38)*$B$24');
+  });
+  // Row 41: Override total per model
+  ms_s('A41', 'Override \u5408\u8A08');
+  memMods.forEach(function(mod, i) {
+    var c = memCols[i];
+    ms_f(c+'41', '$B$39+'+c+'40');
+  });
+  // Row 42: Override total JPY
+  ms_s('A42', 'Override \u5408\u8A08 (JPY)');
+  memMods.forEach(function(mod, i) {
+    var c = memCols[i];
+    ms_f(c+'42', c+'41*$B$4');
+  });
+  // Row 43: Difference vs Default
+  ms_s('A43', 'Default\u3068\u306E\u5DEE\u984D (USD)');
+  memMods.forEach(function(mod, i) {
+    var c = memCols[i];
+    ms_f(c+'43', '$B$33-'+c+'41');
+  });
 
-  ms_s('A38', '合計');             ms_f('B38', 'B34+B35+B36+B37');       ms_f('C38', 'B38*B4');
-  ms_s('A39', '1リクエスト単価');   ms_f('B39', 'IF(B27>0,B38/B27,0)');   ms_f('C39', 'B39*B4');
-  ms_s('A40', 'セッション単価');    ms_f('B40', 'IF(B26>0,B38/B26,0)');   ms_f('C40', 'B40*B4');
-  ms_s('A41', 'ユーザー月額');      ms_f('B41', 'IF(B5>0,B38/B5,0)');     ms_f('C41', 'B41*B4');
-  ms_s('A42', 'ユーザー年額');      ms_f('B42', 'B41*12');                ms_f('C42', 'B42*B4');
+  // Row 45: Unit prices per model (Override)
+  ms_s('A45', '\u3010\u5358\u4FA1 (Override)\u3011');
+  ms_s('A46', '');
+  memMods.forEach(function(mod, i) { ms_s(memCols[i]+'46', mod.name); });
+  ms_s('A47', '1\u30EA\u30AF\u30A8\u30B9\u30C8\u5358\u4FA1 (USD)');
+  memMods.forEach(function(mod, i) { ms_f(memCols[i]+'47', 'IF($B$24>0,'+memCols[i]+'41/$B$24,0)'); });
+  ms_s('A48', '\u30BB\u30C3\u30B7\u30E7\u30F3\u5358\u4FA1 (USD)');
+  memMods.forEach(function(mod, i) { ms_f(memCols[i]+'48', 'IF($B$23>0,'+memCols[i]+'41/$B$23,0)'); });
+  ms_s('A49', '\u30E6\u30FC\u30B6\u30FC\u6708\u984D (USD)');
+  memMods.forEach(function(mod, i) { ms_f(memCols[i]+'49', 'IF($B$5>0,'+memCols[i]+'41/$B$5,0)'); });
+  ms_s('A50', '\u30E6\u30FC\u30B6\u30FC\u5E74\u984D (USD)');
+  memMods.forEach(function(mod, i) { ms_f(memCols[i]+'50', memCols[i]+'49*12'); });
 
-  // B44:D50 — Override comparison (formulas)
-  ms_s('A44', '【Override比較】');
-  ms_s('A45', ''); ms_s('B45', 'Default'); ms_s('C45', 'Override'); ms_s('D45', '差額');
-  ms_s('A46', 'LTM ストレージ (USD)');
-  ms_f('B46', 'B30*B21/1000');                        // Default storage cost
-  ms_f('C46', 'B30*B22/1000');                        // Override storage cost
-  ms_f('D46', 'B46-C46');                             // Savings (positive = cheaper)
-  ms_s('A47', 'LLM 抽出 (USD)');
-  ms_n('B47', 0);                                     // Default: no extraction cost
-  ms_f('C47', '(B14/1000000*B16+B15/1000000*B17)*B27'); // Override: extraction cost
-  ms_f('D47', 'B47-C47');                             // Increase (negative = more expensive)
-  ms_s('A48', '合計 (USD)');
-  ms_f('B48', 'B34+B46+B36');                         // Default total (no extraction)
-  ms_f('C48', 'B34+C46+B36+C47');                     // Override total (with extraction)
-  ms_f('D48', 'B48-C48');                             // Net difference
-  ms_s('A49', '差額率');
-  ms['D49'] = {t:'n', f:'IF(B48>0,(B48-C48)/B48,0)', z:'0.0%'};
-
-  ms['!ref'] = 'A1:D49';
-  ms['!cols'] = [{wch:32},{wch:16},{wch:16},{wch:16}];
+  // Sheet config
+  var lastMemCol = memCols[memMods.length - 1] || 'M';
+  ms['!ref'] = 'A1:' + lastMemCol + '50';
+  var memColWidths = [{wch:32},{wch:16}];
+  memMods.forEach(function() { memColWidths.push({wch:16}); });
+  ms['!cols'] = memColWidths;
   XLSX.utils.book_append_sheet(wb, ms, 'AgentCore Memory');
 
   // LLM単価 sheet — model pricing table for VLOOKUP
@@ -688,7 +818,7 @@ function render() {
     html += '<section class="mb-8">' +
       '<div class="flex items-center justify-between mb-4"><h2 class="text-xs font-semibold text-slate-400 uppercase tracking-wider">\u30D1\u30E9\u30E1\u30FC\u30BF\u8A2D\u5B9A</h2>' +
       '<button onclick="downloadExcel()" class="px-3 py-1.5 text-xs font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">Excel \u30C0\u30A6\u30F3\u30ED\u30FC\u30C9</button></div>' +
-      paramGrid('sim', p, totalHours) + optionBtns('sim', p) +
+      paramGrid('sim', p) + modelSettingsSection('sim', p) +
     '</section>';
 
     // Unit price table
@@ -708,31 +838,35 @@ function render() {
         '<a href="https://aws.amazon.com/bedrock/pricing/" target="_blank" class="text-blue-500 hover:underline ml-1">Bedrock \u2197</a></p></section>';
 
     // Cost breakdown
-    html += '<section class="mb-8"><div class="flex items-baseline gap-4 mb-3"><h2 class="text-sm font-semibold text-slate-700">\u30B3\u30B9\u30C8\u5185\u8A33 (\u00A5)</h2><span class="text-xs text-slate-400">\u7DCF\u30EA\u30AF\u30A8\u30B9\u30C8: ' + totalReqs.toLocaleString() + ' / ' + (p.isSharedCache ? '\u5171\u6709' : '\u500B\u5225') + '</span></div>' +
+    html += '<section class="mb-8"><div class="flex items-baseline gap-4 mb-3"><h2 class="text-sm font-semibold text-slate-700">\u30B3\u30B9\u30C8\u5185\u8A33 (\u00A5)</h2><span class="text-xs text-slate-400">\u7DCF\u30EA\u30AF\u30A8\u30B9\u30C8: ' + totalReqs.toLocaleString() + '</span></div>' +
       '<div class="overflow-x-auto border border-slate-200 rounded-lg"><table class="w-full text-sm"><thead><tr class="bg-slate-50 text-left"><th class="px-4 py-2.5 text-xs text-slate-500">\u8CBB\u76EE</th>' + modelHeaders(results) + '</tr></thead>' +
       '<tbody class="font-mono text-xs">' +
-        ['Write', 'Read', 'Prompt', 'Output', 'Storage'].map((label, i) => {
-          const keys = ['write', 'read', 'prompt', 'outputCost', 'storageCost'];
-          const k = keys[i];
+        [
+          ['\u5165\u529B (Prompt)', 'prompt'],
+          ['\u51FA\u529B (Output)', 'outputCost'],
+          ['CW \u66F8\u8FBC', 'cwWrite'],
+          ['CR \u8AAD\u8FBC', 'read'],
+          ['Storage', 'storageCost'],
+        ].map((pair, i) => {
+          const label = pair[0], k = pair[1];
           let row = '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">' + (i+1) + '. ' + label + '</td>' +
             results.map(r => {
-              if (k === 'storageCost' && r.storageCost === 0) return '<td class="px-4 py-2 text-slate-400">\u2014</td>';
-              return '<td class="px-4 py-2 ' + (k === 'storageCost' && r.storageCost > 0 ? 'text-orange-600' : '') + '">&yen;' + fJ(r[k]) + '</td>';
+              const v = r[k];
+              if ((k === 'storageCost' || k === 'cwWrite') && v === 0) return '<td class="px-4 py-2 text-slate-400">\u2014</td>';
+              return '<td class="px-4 py-2 ' + (k === 'storageCost' && v > 0 ? 'text-orange-600' : '') + '">&yen;' + fJ(v) + '</td>';
             }).join('') + '</tr>';
-          if (k === 'write') {
-            row += '<tr class="border-t border-slate-50 bg-slate-50/50"><td class="px-4 py-1 text-[11px] text-slate-400 font-sans pl-8">\u2514 \u66F8\u8FBC\u56DE\u6570/\u65E5 (TTL)</td>' +
-              results.map(r => '<td class="px-4 py-1 text-[11px] text-slate-400">' + r.writesPerDay + '\u56DE/\u65E5' + (r.isClaude ? ' (' + (p.claudeWriteType === '1h' ? '1h TTL' : '5m TTL') + ')' : r.isOpenAI ? ' (\u81EA\u52D5~5m)' : r.isNova ? ' (5m TTL)' : ' (\u6301\u7D9A)') + '</td>').join('') + '</tr>';
-          }
           return row;
         }).join('') +
         '<tr class="border-t-2 border-slate-300 bg-slate-50 font-semibold"><td class="px-4 py-3 font-sans font-semibold text-slate-700">\u5408\u8A08</td>' +
           results.map(r => '<td class="px-4 py-3 text-slate-900">&yen;' + fJ(r.total) + ' <span class="text-slate-400 font-normal text-[10px]">($' + fU(r.total) + ')</span></td>').join('') + '</tr>' +
         '<tr class="border-t border-slate-200"><td class="px-4 py-2 font-sans text-slate-500">1\u30EA\u30AF\u30A8\u30B9\u30C8\u5358\u4FA1</td>' +
           results.map(r => '<td class="px-4 py-2 font-semibold">&yen;' + fJ2(r.perReq) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100 bg-slate-50/30"><td class="px-4 py-2 font-sans text-[11px] text-slate-400">\u521D\u56DE\u30AD\u30E3\u30C3\u30B7\u30E5\u66F8\u8FBC (\u5408\u8A08\u5916)</td>' +
+          results.map(r => '<td class="px-4 py-2 text-[11px] text-slate-400">&yen;' + fJ(r.ttlWrite) + ' <span class="text-slate-300">(' + r.writesPerDay + '\u56DE/\u65E5)</span></td>').join('') + '</tr>' +
       '</tbody></table></div></section>';
 
     // Cache effect
-    html += '<section class="mb-8"><div class="flex items-baseline gap-3 mb-3"><h2 class="text-sm font-semibold text-slate-700">\u30AD\u30E3\u30C3\u30B7\u30E5\u52B9\u679C</h2><span class="text-xs text-slate-400">\u30D2\u30C3\u30C8\u7387 ' + p.cacheHitRate + '%</span></div>' +
+    html += '<section class="mb-8"><div class="flex items-baseline gap-3 mb-3"><h2 class="text-sm font-semibold text-slate-700">\u30AD\u30E3\u30C3\u30B7\u30E5\u52B9\u679C</h2></div>' +
       '<div class="overflow-x-auto border border-slate-200 rounded-lg"><table class="w-full text-sm"><thead><tr class="bg-slate-50 text-left"><th class="px-4 py-2.5 text-xs text-slate-500"></th>' + modelHeaders(results) + '</tr></thead>' +
       '<tbody class="font-mono text-xs">' +
         '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">\u30AD\u30E3\u30C3\u30B7\u30E5\u306A\u3057</td>' + results.map(r => '<td class="px-4 py-2">&yen;' + fJ(r.noCache) + '</td>').join('') + '</tr>' +
@@ -755,7 +889,7 @@ function render() {
           '">' + s.name + '</button>'
         ).join('') +
       '</div></div>' +
-      paramGrid('sc', sc, sc.hoursPerDay * sc.testDays) + optionBtns('sc', sc) +
+      paramGrid('sc', sc) + modelSettingsSection('sc', sc) +
     '</section>';
 
     // Time series chart
@@ -766,7 +900,7 @@ function render() {
 
     // Daily cost summary
     const { results: scResults, totalReqs: scTotalReqs } = computeResults(sc);
-    html += '<section class="mb-8"><div class="flex items-baseline gap-4 mb-3"><h2 class="text-sm font-semibold text-slate-700">\u30B7\u30CA\u30EA\u30AA\u7D50\u679C\u4E00\u89A7</h2><span class="text-xs text-slate-400">' + sc.testDays + '\u65E5\u9593 / ' + scTotalReqs.toLocaleString() + ' reqs / ' + (sc.isSharedCache ? '\u5171\u6709' : '\u500B\u5225') + '</span><button onclick="downloadExcel()" class="ml-auto px-3 py-1.5 text-xs font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">Excel \u30C0\u30A6\u30F3\u30ED\u30FC\u30C9</button></div>' +
+    html += '<section class="mb-8"><div class="flex items-baseline gap-4 mb-3"><h2 class="text-sm font-semibold text-slate-700">\u30B7\u30CA\u30EA\u30AA\u7D50\u679C\u4E00\u89A7</h2><span class="text-xs text-slate-400">' + sc.testDays + '\u65E5\u9593 / ' + scTotalReqs.toLocaleString() + ' reqs</span><button onclick="downloadExcel()" class="ml-auto px-3 py-1.5 text-xs font-medium text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors">Excel \u30C0\u30A6\u30F3\u30ED\u30FC\u30C9</button></div>' +
       '<div class="overflow-x-auto border border-slate-200 rounded-lg"><table class="w-full text-sm"><thead><tr class="bg-slate-50 text-left"><th class="px-4 py-2.5 text-xs text-slate-500"></th>' + modelHeaders(scResults) + '</tr></thead>' +
       '<tbody class="font-mono text-xs">' +
         '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">1\u65E5\u3042\u305F\u308A\u30B3\u30B9\u30C8</td>' + series.map(s => '<td class="px-4 py-2">&yen;' + fJ(s.daily) + '</td>').join('') + '</tr>' +
@@ -857,84 +991,111 @@ function render() {
         ).join('') +
       '</div></section>';
 
-    // Cost breakdown — with formula column (symbolic equations)
-    var exModel = m.extractionModel && pricingData[m.extractionModel] ? pricingData[m.extractionModel] : null;
-    var fTd = '<td class="px-4 py-2 text-[10px] text-slate-400">';
-    html += '<section class="mb-8"><h2 class="text-sm font-semibold text-slate-700 mb-3">\u30B3\u30B9\u30C8\u5185\u8A33 (\u6708\u984D)</h2>' +
-      '<div class="overflow-x-auto border border-slate-200 rounded-lg"><table class="w-full text-sm">' +
-      '<thead><tr class="bg-slate-50"><th class="px-4 py-2.5 text-xs text-slate-500 text-left">\u8CBB\u76EE</th><th class="px-4 py-2.5 text-xs text-slate-500 text-left">\u8A08\u7B97\u5F0F</th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">USD</th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">JPY</th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">\u5272\u5408</th></tr></thead>' +
-      '<tbody class="font-mono text-xs">' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">STM \u30A4\u30D9\u30F3\u30C8</td>' + fTd + 'STM\u30A4\u30D9\u30F3\u30C8\u6570 \u00D7 \u5358\u4FA1/1K</td><td class="px-4 py-2 text-right">$' + fU(mr.stmCost) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.stmCost) + '</td><td class="px-4 py-2 text-right text-slate-400">' + (mr.totalCost > 0 ? (mr.stmCost / mr.totalCost * 100).toFixed(1) : '0') + '%</td></tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">LTM \u30B9\u30C8\u30EC\u30FC\u30B8' + (m.useOverrideStrategy ? ' (Override)' : ' (Default)') + '</td>' + fTd + 'LTM\u30EC\u30B3\u30FC\u30C9\u6570 \u00D7 \u5358\u4FA1/1K</td><td class="px-4 py-2 text-right">$' + fU(mr.ltmStorageCost) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.ltmStorageCost) + '</td><td class="px-4 py-2 text-right text-slate-400">' + (mr.totalCost > 0 ? (mr.ltmStorageCost / mr.totalCost * 100).toFixed(1) : '0') + '%</td></tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">LTM \u691C\u7D22</td>' + fTd + 'LTM\u691C\u7D22\u6570 \u00D7 \u5358\u4FA1/1K</td><td class="px-4 py-2 text-right">$' + fU(mr.ltmRetrievalCost) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.ltmRetrievalCost) + '</td><td class="px-4 py-2 text-right text-slate-400">' + (mr.totalCost > 0 ? (mr.ltmRetrievalCost / mr.totalCost * 100).toFixed(1) : '0') + '%</td></tr>' +
-        (m.useOverrideStrategy && mr.extractionCost > 0 ? '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">LLM \u62BD\u51FA <span class="text-[10px] text-slate-400">(' + (exModel ? exModel.name : '') + ')</span></td>' + fTd + '(\u5165\u529Btok/1M \u00D7 \u5165\u529B\u5358\u4FA1 + \u51FA\u529Btok/1M \u00D7 \u51FA\u529B\u5358\u4FA1) \u00D7 \u7DCF\u30EA\u30AF\u30A8\u30B9\u30C8</td><td class="px-4 py-2 text-right">$' + fU(mr.extractionCost) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.extractionCost) + '</td><td class="px-4 py-2 text-right text-slate-400">' + (mr.totalCost > 0 ? (mr.extractionCost / mr.totalCost * 100).toFixed(1) : '0') + '%</td></tr>' : '') +
-        '<tr class="border-t-2 border-slate-300 bg-slate-50 font-semibold"><td class="px-4 py-3 font-sans text-slate-700">\u5408\u8A08</td><td></td><td class="px-4 py-3 text-right">$' + fU(mr.totalCost) + '</td><td class="px-4 py-3 text-right">&yen;' + fJ(mr.totalCost) + '</td><td class="px-4 py-3 text-right">100%</td></tr>' +
-        '<tr class="border-t border-slate-200"><td class="px-4 py-2 font-sans text-slate-500">1\u30EA\u30AF\u30A8\u30B9\u30C8\u5358\u4FA1</td>' + fTd + '\u5408\u8A08 / \u7DCF\u30EA\u30AF\u30A8\u30B9\u30C8</td><td class="px-4 py-2 text-right">$' + mr.perRequest.toFixed(5) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ2(mr.perRequest) + '</td><td></td></tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-2 font-sans text-slate-500">\u30BB\u30C3\u30B7\u30E7\u30F3\u5358\u4FA1</td>' + fTd + '\u5408\u8A08 / \u7DCF\u30BB\u30C3\u30B7\u30E7\u30F3</td><td class="px-4 py-2 text-right">$' + mr.perSession.toFixed(4) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ2(mr.perSession) + '</td><td></td></tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-2 font-sans text-slate-500">\u30E6\u30FC\u30B6\u30FC\u6708\u984D</td>' + fTd + '\u5408\u8A08 / \u30E6\u30FC\u30B6\u30FC\u6570</td><td class="px-4 py-2 text-right">$' + mr.perUserMonth.toFixed(4) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ2(mr.perUserMonth) + '</td><td></td></tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-2 font-sans text-slate-500">\u30E6\u30FC\u30B6\u30FC\u5E74\u984D</td>' + fTd + '\u30E6\u30FC\u30B6\u30FC\u6708\u984D \u00D7 12</td><td class="px-4 py-2 text-right">$' + mr.perUserYear.toFixed(4) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ2(mr.perUserYear) + '</td><td></td></tr>' +
-      '</tbody></table></div></section>';
+    // Cost breakdown — all-model comparison when Override, simple table when Default
+    var er = mr.extractionResults;
+    var nMod = er.length;
+    if (m.useOverrideStrategy) {
+      // Override: full model comparison table
+      html += '<section class="mb-8"><h2 class="text-sm font-semibold text-slate-700 mb-3">\u30B3\u30B9\u30C8\u5185\u8A33 (\u6708\u984D) \u2014 \u5168\u30E2\u30C7\u30EB\u6BD4\u8F03</h2>' +
+        '<div class="overflow-x-auto border border-slate-200 rounded-lg"><table class="w-full text-sm"><thead><tr class="bg-slate-50"><th class="px-3 py-2.5 text-xs text-slate-500 text-left">\u8CBB\u76EE</th>' +
+        er.map(function(r) { return '<th class="px-3 py-2.5 text-xs font-semibold text-right" style="color:' + r.color + '">' + r.name + '</th>'; }).join('') +
+        '</tr></thead><tbody class="font-mono text-xs">' +
+        '<tr class="border-t border-slate-100"><td class="px-3 py-2 text-slate-600 font-sans">STM \u30A4\u30D9\u30F3\u30C8</td><td class="px-3 py-2 text-right" colspan="' + nMod + '">&yen;' + fJ(mr.stmCost) + ' <span class="text-slate-400 text-[10px]">(\u5168\u30E2\u30C7\u30EB\u5171\u901A)</span></td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-3 py-2 text-slate-600 font-sans">LTM \u30B9\u30C8\u30EC\u30FC\u30B8 (Override)</td><td class="px-3 py-2 text-right" colspan="' + nMod + '">&yen;' + fJ(mr.ltmStorageCostOverride) + ' <span class="text-slate-400 text-[10px]">(\u5168\u30E2\u30C7\u30EB\u5171\u901A)</span></td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-3 py-2 text-slate-600 font-sans">LTM \u691C\u7D22</td><td class="px-3 py-2 text-right" colspan="' + nMod + '">&yen;' + fJ(mr.ltmRetrievalCost) + ' <span class="text-slate-400 text-[10px]">(\u5168\u30E2\u30C7\u30EB\u5171\u901A)</span></td></tr>' +
+        '<tr class="border-t border-slate-200 bg-amber-50/30"><td class="px-3 py-2 text-amber-700 font-sans font-semibold">LLM \u62BD\u51FA</td>' +
+        er.map(function(r) { return '<td class="px-3 py-2 text-right">&yen;' + fJ(r.extractionCost) + '</td>'; }).join('') + '</tr>' +
+        '<tr class="border-t-2 border-slate-300 bg-slate-50 font-semibold"><td class="px-3 py-3 font-sans text-slate-700">\u5408\u8A08</td>' +
+        er.map(function(r) { return '<td class="px-3 py-3 text-right text-slate-900">&yen;' + fJ(r.totalCostOverride) + '</td>'; }).join('') + '</tr>' +
+        '<tr class="border-t border-slate-200"><td class="px-3 py-2 font-sans text-slate-500">1\u30EA\u30AF\u30A8\u30B9\u30C8\u5358\u4FA1</td>' +
+        er.map(function(r) { return '<td class="px-3 py-2 text-right">&yen;' + fJ2(r.perRequest) + '</td>'; }).join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-3 py-2 font-sans text-slate-500">\u30BB\u30C3\u30B7\u30E7\u30F3\u5358\u4FA1</td>' +
+        er.map(function(r) { return '<td class="px-3 py-2 text-right">&yen;' + fJ2(r.perSession) + '</td>'; }).join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-3 py-2 font-sans text-slate-500">\u30E6\u30FC\u30B6\u30FC\u6708\u984D</td>' +
+        er.map(function(r) { return '<td class="px-3 py-2 text-right">&yen;' + fJ2(r.perUserMonth) + '</td>'; }).join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-3 py-2 font-sans text-slate-500">\u30E6\u30FC\u30B6\u30FC\u5E74\u984D</td>' +
+        er.map(function(r) { return '<td class="px-3 py-2 text-right">&yen;' + fJ2(r.perUserYear) + '</td>'; }).join('') + '</tr>' +
+        '</tbody></table></div></section>';
+    } else {
+      // Default: no model dependency, simple table
+      var fTd = '<td class="px-4 py-2 text-[10px] text-slate-400">';
+      html += '<section class="mb-8"><h2 class="text-sm font-semibold text-slate-700 mb-3">\u30B3\u30B9\u30C8\u5185\u8A33 (\u6708\u984D)</h2>' +
+        '<div class="overflow-x-auto border border-slate-200 rounded-lg"><table class="w-full text-sm">' +
+        '<thead><tr class="bg-slate-50"><th class="px-4 py-2.5 text-xs text-slate-500 text-left">\u8CBB\u76EE</th><th class="px-4 py-2.5 text-xs text-slate-500 text-left">\u8A08\u7B97\u5F0F</th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">USD</th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">JPY</th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">\u5272\u5408</th></tr></thead>' +
+        '<tbody class="font-mono text-xs">' +
+          '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">STM \u30A4\u30D9\u30F3\u30C8</td>' + fTd + 'STM\u30A4\u30D9\u30F3\u30C8\u6570 \u00D7 \u5358\u4FA1/1K</td><td class="px-4 py-2 text-right">$' + fU(mr.stmCost) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.stmCost) + '</td><td class="px-4 py-2 text-right text-slate-400">' + (mr.totalCost > 0 ? (mr.stmCost / mr.totalCost * 100).toFixed(1) : '0') + '%</td></tr>' +
+          '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">LTM \u30B9\u30C8\u30EC\u30FC\u30B8 (Default)</td>' + fTd + 'LTM\u30EC\u30B3\u30FC\u30C9\u6570 \u00D7 \u5358\u4FA1/1K</td><td class="px-4 py-2 text-right">$' + fU(mr.ltmStorageCost) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.ltmStorageCost) + '</td><td class="px-4 py-2 text-right text-slate-400">' + (mr.totalCost > 0 ? (mr.ltmStorageCost / mr.totalCost * 100).toFixed(1) : '0') + '%</td></tr>' +
+          '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">LTM \u691C\u7D22</td>' + fTd + 'LTM\u691C\u7D22\u6570 \u00D7 \u5358\u4FA1/1K</td><td class="px-4 py-2 text-right">$' + fU(mr.ltmRetrievalCost) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.ltmRetrievalCost) + '</td><td class="px-4 py-2 text-right text-slate-400">' + (mr.totalCost > 0 ? (mr.ltmRetrievalCost / mr.totalCost * 100).toFixed(1) : '0') + '%</td></tr>' +
+          '<tr class="border-t-2 border-slate-300 bg-slate-50 font-semibold"><td class="px-4 py-3 font-sans text-slate-700">\u5408\u8A08</td><td></td><td class="px-4 py-3 text-right">$' + fU(mr.totalCost) + '</td><td class="px-4 py-3 text-right">&yen;' + fJ(mr.totalCost) + '</td><td class="px-4 py-3 text-right">100%</td></tr>' +
+          '<tr class="border-t border-slate-200"><td class="px-4 py-2 font-sans text-slate-500">1\u30EA\u30AF\u30A8\u30B9\u30C8\u5358\u4FA1</td>' + fTd + '\u5408\u8A08 / \u7DCF\u30EA\u30AF\u30A8\u30B9\u30C8</td><td class="px-4 py-2 text-right">$' + mr.perRequest.toFixed(5) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ2(mr.perRequest) + '</td><td></td></tr>' +
+          '<tr class="border-t border-slate-100"><td class="px-4 py-2 font-sans text-slate-500">\u30BB\u30C3\u30B7\u30E7\u30F3\u5358\u4FA1</td>' + fTd + '\u5408\u8A08 / \u7DCF\u30BB\u30C3\u30B7\u30E7\u30F3</td><td class="px-4 py-2 text-right">$' + mr.perSession.toFixed(4) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ2(mr.perSession) + '</td><td></td></tr>' +
+          '<tr class="border-t border-slate-100"><td class="px-4 py-2 font-sans text-slate-500">\u30E6\u30FC\u30B6\u30FC\u6708\u984D</td>' + fTd + '\u5408\u8A08 / \u30E6\u30FC\u30B6\u30FC\u6570</td><td class="px-4 py-2 text-right">$' + mr.perUserMonth.toFixed(4) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ2(mr.perUserMonth) + '</td><td></td></tr>' +
+          '<tr class="border-t border-slate-100"><td class="px-4 py-2 font-sans text-slate-500">\u30E6\u30FC\u30B6\u30FC\u5E74\u984D</td>' + fTd + '\u30E6\u30FC\u30B6\u30FC\u6708\u984D \u00D7 12</td><td class="px-4 py-2 text-right">$' + mr.perUserYear.toFixed(4) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ2(mr.perUserYear) + '</td><td></td></tr>' +
+        '</tbody></table></div></section>';
+    }
 
     // Donut chart + Override comparison
+    var cheapest = er.reduce(function(a, b) { return a.totalCostOverride < b.totalCostOverride ? a : b; });
     html += '<section class="mb-8"><div class="grid grid-cols-1 lg:grid-cols-2 gap-8">' +
-      '<div><h2 class="text-sm font-semibold text-slate-700 mb-3">\u30B3\u30B9\u30C8\u69CB\u6210</h2>' +
+      '<div><h2 class="text-sm font-semibold text-slate-700 mb-3">\u30B3\u30B9\u30C8\u69CB\u6210' + (m.useOverrideStrategy ? ' <span class="text-xs font-normal text-slate-400">(\u6700\u5B89: ' + cheapest.name + ')</span>' : '') + '</h2>' +
         buildPieChart([
           { label: 'STM \u30A4\u30D9\u30F3\u30C8', value: mr.stmCost, color: '#3B82F6' },
           { label: 'LTM \u30B9\u30C8\u30EC\u30FC\u30B8', value: mr.ltmStorageCost, color: '#8B5CF6' },
           { label: 'LTM \u691C\u7D22', value: mr.ltmRetrievalCost, color: '#10B981' },
-          ...(m.useOverrideStrategy && mr.extractionCost > 0 ? [{ label: 'LLM \u62BD\u51FA', value: mr.extractionCost, color: '#F59E0B' }] : []),
+          ...(m.useOverrideStrategy ? [{ label: 'LLM \u62BD\u51FA (' + cheapest.name + ')', value: cheapest.extractionCost, color: '#F59E0B' }] : []),
         ]) +
       '</div>' +
-      '<div><h2 class="text-sm font-semibold text-slate-700 mb-3">Override Strategy \u6BD4\u8F03</h2>' +
-        '<div class="border border-slate-200 rounded-lg overflow-hidden"><table class="w-full text-sm">' +
-        '<thead><tr class="bg-slate-50"><th class="px-4 py-2.5 text-xs text-slate-500 text-left"></th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">Default</th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">Override</th><th class="px-4 py-2.5 text-xs text-slate-500 text-right">\u524A\u6E1B\u984D</th></tr></thead>' +
-        '<tbody class="font-mono text-xs">' +
-          '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">LTM \u30B9\u30C8\u30EC\u30FC\u30B8</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.ltmStorageCostDefault) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.ltmStorageCostOverride) + '</td><td class="px-4 py-2 text-right text-green-600">&yen;' + fJ(mr.ltmStorageCostDefault - mr.ltmStorageCostOverride) + '</td></tr>' +
-          '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-600 font-sans">LLM \u62BD\u51FA</td><td class="px-4 py-2 text-right text-slate-400">&yen;0</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.extractionCost) + '</td><td class="px-4 py-2 text-right text-red-500">+&yen;' + fJ(mr.extractionCost) + '</td></tr>' +
-          '<tr class="border-t border-slate-200 bg-slate-50 font-semibold"><td class="px-4 py-2 font-sans text-slate-700">\u5408\u8A08</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.totalCostDefault) + '</td><td class="px-4 py-2 text-right">&yen;' + fJ(mr.totalCostOverride) + '</td><td class="px-4 py-2 text-right ' + (mr.totalCostDefault >= mr.totalCostOverride ? 'text-green-600' : 'text-red-500') + '">' + (mr.totalCostDefault >= mr.totalCostOverride ? '&yen;' + fJ(mr.totalCostDefault - mr.totalCostOverride) : '+&yen;' + fJ(mr.totalCostOverride - mr.totalCostDefault)) + '</td></tr>' +
-          '<tr class="border-t border-slate-200"><td class="px-4 py-2 font-sans text-slate-500">\u5DEE\u984D\u7387</td><td></td><td></td><td class="px-4 py-2 text-right ' + (mr.totalCostDefault >= mr.totalCostOverride ? 'text-green-600' : 'text-red-500') + ' font-semibold">' + (mr.totalCostDefault > 0 ? ((1 - mr.totalCostOverride / mr.totalCostDefault) * 100).toFixed(1) : '0') + '%</td></tr>' +
+      '<div><h2 class="text-sm font-semibold text-slate-700 mb-3">Override Strategy \u6BD4\u8F03 \u2014 \u5168\u30E2\u30C7\u30EB</h2>' +
+        '<div class="border border-slate-200 rounded-lg overflow-hidden overflow-x-auto"><table class="w-full text-sm">' +
+        '<thead><tr class="bg-slate-50"><th class="px-3 py-2.5 text-xs text-slate-500 text-left"></th>' +
+        er.map(function(r) { return '<th class="px-2 py-2.5 text-[10px] font-semibold text-right" style="color:' + r.color + '">' + r.name + '</th>'; }).join('') +
+        '</tr></thead>' +
+        '<tbody class="font-mono text-[11px]">' +
+          '<tr class="border-t border-slate-100"><td class="px-3 py-2 text-slate-600 font-sans">Default\u5408\u8A08</td><td class="px-2 py-2 text-right" colspan="' + nMod + '">&yen;' + fJ(mr.totalCostDefault) + '</td></tr>' +
+          '<tr class="border-t border-slate-100"><td class="px-3 py-2 text-slate-600 font-sans">Override\u5408\u8A08</td>' +
+          er.map(function(r) { return '<td class="px-2 py-2 text-right">&yen;' + fJ(r.totalCostOverride) + '</td>'; }).join('') + '</tr>' +
+          '<tr class="border-t border-slate-200 bg-slate-50 font-semibold"><td class="px-3 py-2 font-sans text-slate-700">\u5DEE\u984D</td>' +
+          er.map(function(r) {
+            var diff = mr.totalCostDefault - r.totalCostOverride;
+            return '<td class="px-2 py-2 text-right ' + (diff >= 0 ? 'text-green-600' : 'text-red-500') + '">' + (diff >= 0 ? '&yen;' + fJ(diff) : '+&yen;' + fJ(-diff)) + '</td>';
+          }).join('') + '</tr>' +
         '</tbody></table></div>' +
       '</div></div></section>';
 
-    // Preset comparison table
+    // Preset comparison table (Default strategy only — Override comparison is in the section above)
     const presetResults = memoryPresets.map(p => ({ preset: p, result: computeMemoryResults({
       ...p,
       stmEventsPerRequest: m.stmEventsPerRequest || 2,
       ltmRetrievalTiming: m.ltmRetrievalTiming || 'every',
-      extractionEnabled: p.useOverrideStrategy,
-      extractionModel: m.extractionModel,
+      extractionEnabled: false,
       extractionInputTokens: m.extractionInputTokens,
       extractionOutputTokens: m.extractionOutputTokens,
     }) }));
-    html += '<section class="mb-8"><h2 class="text-sm font-semibold text-slate-700 mb-3">規模別シミュレーション比較</h2>' +
+    html += '<section class="mb-8"><h2 class="text-sm font-semibold text-slate-700 mb-3">\u898F\u6A21\u5225\u30B7\u30DF\u30E5\u30EC\u30FC\u30B7\u30E7\u30F3\u6BD4\u8F03 <span class="text-xs font-normal text-slate-400">(Default Strategy)</span></h2>' +
       '<div class="overflow-x-auto border border-slate-200 rounded-lg"><table class="w-full text-sm">' +
-      '<thead><tr class="bg-slate-50"><th class="px-4 py-2.5 text-xs text-slate-500 text-left">項目</th>' +
+      '<thead><tr class="bg-slate-50"><th class="px-4 py-2.5 text-xs text-slate-500 text-left">\u9805\u76EE</th>' +
       presetResults.map(pr => '<th class="px-4 py-2.5 text-xs text-slate-500 text-right">' + pr.preset.name + '<br><span class="font-normal text-slate-400">' + pr.preset.desc + '</span></th>').join('') +
       '</tr></thead>' +
       '<tbody class="text-xs">' +
-        '<tr class="border-t border-slate-100 bg-slate-50/50"><td colspan="' + (presetResults.length + 1) + '" class="px-4 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">パラメータ</td></tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">ユーザー数</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.preset.userCount.toLocaleString() + '</td>').join('') + '</tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">セッション/ユーザー</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.preset.sessionsPerUser + '</td>').join('') + '</tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">リクエスト/セッション</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.preset.roundtripsPerSession + '</td>').join('') + '</tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTM検索/リクエスト</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.preset.retrievalsPerSession + '</td>').join('') + '</tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTMレコード/ユーザー</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.preset.recordsPerUser + '</td>').join('') + '</tr>' +
-        '<tr class="border-t border-slate-100 bg-slate-50/50"><td colspan="' + (presetResults.length + 1) + '" class="px-4 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">月間ボリューム</td></tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">総リクエスト</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.result.totalRoundtrips.toLocaleString() + '</td>').join('') + '</tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">STMイベント</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.result.totalEvents.toLocaleString() + '</td>').join('') + '</tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTM検索</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.result.totalRetrievals.toLocaleString() + '</td>').join('') + '</tr>' +
-        '<tr class="border-t border-slate-100 bg-slate-50/50"><td colspan="' + (presetResults.length + 1) + '" class="px-4 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">月額コスト (Default Strategy)</td></tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">STMイベント</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ(pr.result.stmCost) + '</td>').join('') + '</tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTMストレージ</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ(pr.result.ltmStorageCostDefault) + '</td>').join('') + '</tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTM検索</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ(pr.result.ltmRetrievalCost) + '</td>').join('') + '</tr>' +
-        '<tr class="border-t-2 border-slate-300 bg-slate-50 font-semibold"><td class="px-4 py-2 text-slate-700">合計 (Default)</td>' + presetResults.map(pr => '<td class="px-4 py-2 text-right font-mono">&yen;' + fJ(pr.result.totalCostDefault) + '</td>').join('') + '</tr>' +
-        '<tr class="border-t border-slate-100 bg-amber-50/50"><td colspan="' + (presetResults.length + 1) + '" class="px-4 py-1.5 text-[11px] font-semibold text-amber-600 uppercase tracking-wider">Override Strategy (+ LLM\u62BD\u51FA\u30B3\u30B9\u30C8)</td></tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTM\u30B9\u30C8\u30EC\u30FC\u30B8 (Override)</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ(pr.result.ltmStorageCostOverride) + '</td>').join('') + '</tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LLM\u62BD\u51FA</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ(pr.result.extractionCost) + '</td>').join('') + '</tr>' +
-        '<tr class="border-t border-slate-200 bg-amber-50 font-semibold"><td class="px-4 py-2 text-amber-700">合計 (Override)</td>' + presetResults.map(pr => '<td class="px-4 py-2 text-right font-mono text-amber-700">&yen;' + fJ(pr.result.totalCostOverride) + '</td>').join('') + '</tr>' +
-        '<tr class="border-t border-slate-100 bg-slate-50/50"><td colspan="' + (presetResults.length + 1) + '" class="px-4 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">単価 (Default Strategy)</td></tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">1リクエスト単価</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ2(pr.result.perRequest) + '</td>').join('') + '</tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">ユーザー月額</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ2(pr.result.perUserMonth) + '</td>').join('') + '</tr>' +
-        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">ユーザー年額</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ2(pr.result.perUserYear) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100 bg-slate-50/50"><td colspan="' + (presetResults.length + 1) + '" class="px-4 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">\u30D1\u30E9\u30E1\u30FC\u30BF</td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">\u30E6\u30FC\u30B6\u30FC\u6570</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.preset.userCount.toLocaleString() + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">\u30BB\u30C3\u30B7\u30E7\u30F3/\u30E6\u30FC\u30B6\u30FC</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.preset.sessionsPerUser + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">\u30EA\u30AF\u30A8\u30B9\u30C8/\u30BB\u30C3\u30B7\u30E7\u30F3</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.preset.roundtripsPerSession + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTM\u691C\u7D22/\u30EA\u30AF\u30A8\u30B9\u30C8</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.preset.retrievalsPerSession + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTM\u30EC\u30B3\u30FC\u30C9/\u30E6\u30FC\u30B6\u30FC</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.preset.recordsPerUser + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100 bg-slate-50/50"><td colspan="' + (presetResults.length + 1) + '" class="px-4 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">\u6708\u9593\u30DC\u30EA\u30E5\u30FC\u30E0</td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">\u7DCF\u30EA\u30AF\u30A8\u30B9\u30C8</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.result.totalRoundtrips.toLocaleString() + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">STM\u30A4\u30D9\u30F3\u30C8</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.result.totalEvents.toLocaleString() + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTM\u691C\u7D22</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">' + pr.result.totalRetrievals.toLocaleString() + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100 bg-slate-50/50"><td colspan="' + (presetResults.length + 1) + '" class="px-4 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">\u6708\u984D\u30B3\u30B9\u30C8 (Default Strategy)</td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">STM\u30A4\u30D9\u30F3\u30C8</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ(pr.result.stmCost) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTM\u30B9\u30C8\u30EC\u30FC\u30B8</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ(pr.result.ltmStorageCostDefault) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">LTM\u691C\u7D22</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ(pr.result.ltmRetrievalCost) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t-2 border-slate-300 bg-slate-50 font-semibold"><td class="px-4 py-2 text-slate-700">\u5408\u8A08</td>' + presetResults.map(pr => '<td class="px-4 py-2 text-right font-mono">&yen;' + fJ(pr.result.totalCostDefault) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100 bg-slate-50/50"><td colspan="' + (presetResults.length + 1) + '" class="px-4 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">\u5358\u4FA1</td></tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">1\u30EA\u30AF\u30A8\u30B9\u30C8\u5358\u4FA1</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ2(pr.result.perRequest) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">\u30E6\u30FC\u30B6\u30FC\u6708\u984D</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ2(pr.result.perUserMonth) + '</td>').join('') + '</tr>' +
+        '<tr class="border-t border-slate-100"><td class="px-4 py-1.5 text-slate-600">\u30E6\u30FC\u30B6\u30FC\u5E74\u984D</td>' + presetResults.map(pr => '<td class="px-4 py-1.5 text-right font-mono">&yen;' + fJ2(pr.result.perUserYear) + '</td>').join('') + '</tr>' +
       '</tbody></table></div></section>';
   }
 
@@ -956,22 +1117,24 @@ function render() {
   });
   // Param inputs
   app.querySelectorAll('input[data-prefix]').forEach(el => {
-    el.addEventListener('input', (e) => {
-      if (e.target.value === '' || isNaN(Number(e.target.value))) return;
-      const pfx = e.target.dataset.prefix;
-      const target = pfx === 'sim' ? state.sim : pfx === 'mem' ? state.mem : state.scenarios[state.activeScenario];
-      target[e.target.dataset.key] = Number(e.target.value);
-      debouncedRender(e.target.dataset.key, pfx);
-    });
+    if (el.type === 'checkbox') {
+      el.addEventListener('change', (e) => {
+        const pfx = e.target.dataset.prefix;
+        const target = pfx === 'sim' ? state.sim : pfx === 'mem' ? state.mem : state.scenarios[state.activeScenario];
+        target[e.target.dataset.key] = e.target.checked;
+        render();
+      });
+    } else {
+      el.addEventListener('input', (e) => {
+        if (e.target.value === '' || isNaN(Number(e.target.value))) return;
+        const pfx = e.target.dataset.prefix;
+        const target = pfx === 'sim' ? state.sim : pfx === 'mem' ? state.mem : state.scenarios[state.activeScenario];
+        target[e.target.dataset.key] = Number(e.target.value);
+        debouncedRender(e.target.dataset.key, pfx);
+      });
+    }
   });
   // Option buttons
-  app.querySelectorAll('button[data-opt]').forEach(el => {
-    el.addEventListener('click', () => {
-      const target = el.dataset.prefix === 'sim' ? state.sim : state.scenarios[state.activeScenario];
-      target.isSharedCache = el.dataset.opt === 'shared';
-      render();
-    });
-  });
   app.querySelectorAll('button[data-wrt]').forEach(el => {
     el.addEventListener('click', () => {
       const target = el.dataset.prefix === 'sim' ? state.sim : state.scenarios[state.activeScenario];
@@ -1000,13 +1163,6 @@ function render() {
     });
   });
   // Memory extraction toggle removed — now linked to LTM Strategy (Override = ON, Default = OFF)
-  // Memory extraction model select
-  app.querySelectorAll('select[data-extraction-model]').forEach(el => {
-    el.addEventListener('change', () => {
-      state.mem.extractionModel = el.value;
-      render();
-    });
-  });
 }
 
 let _renderTimer = null;
