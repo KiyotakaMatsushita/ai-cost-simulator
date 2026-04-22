@@ -320,7 +320,11 @@ function decodeState() {
 }
 
 function updateShareUrl() {
-  const enc = encodeState();
+  const cur = location.hash.replace(/^#/, '');
+  // Leave the URL alone if it already represents the current state
+  // (covers both auto-sync diff form and pasted full-snapshot form)
+  if (cur === encodeState(false) || cur === encodeState(true)) return;
+  const enc = encodeState(false);
   const newHash = enc ? '#' + enc : '';
   if (location.hash === newHash) return;
   try {
