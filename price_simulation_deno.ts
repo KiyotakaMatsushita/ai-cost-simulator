@@ -81,7 +81,7 @@ const memoryPresets = [
 
 // \u2500\u2500 State \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 const state = {
-  activeTab: (['simulator','scenario','memory'].indexOf(location.hash.replace('#','')) !== -1 ? location.hash.replace('#','') : 'simulator'),
+  activeTab: 'simulator',
   exchangeRate: 155.00,
   // Simulator tab
   sim: {
@@ -108,6 +108,145 @@ const state = {
     extractionOutputTokens: 200,
   },
 };
+
+// \u2500\u2500 Defaults snapshot (for URL diff encoding) \u2500\u2500
+const defaultSim = Object.assign({}, state.sim);
+const defaultMem = Object.assign({}, state.mem);
+const defaultExchangeRate = state.exchangeRate;
+
+// \u2500\u2500 URL share \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+const simKeyMap = [
+  ['P',  'promptTokens'],
+  ['O',  'outputTokens'],
+  ['W',  'cacheWriteTokens'],
+  ['R',  'cacheReadTokens'],
+  ['C',  'cacheTokens'],
+  ['U',  'userCount'],
+  ['N',  'reqPerUser'],
+  ['D',  'testDays'],
+  ['H',  'hoursPerDay'],
+  ['wpd','cacheWritesPerDay'],
+];
+const memKeyMap = [
+  ['mU',  'userCount'],
+  ['mS',  'sessionsPerUser'],
+  ['mR',  'roundtripsPerSession'],
+  ['mRt', 'retrievalsPerSession'],
+  ['mRc', 'recordsPerUser'],
+  ['mE',  'stmEventsPerRequest'],
+  ['mXi', 'extractionInputTokens'],
+  ['mXo', 'extractionOutputTokens'],
+];
+
+function encodeState() {
+  const parts = [];
+  const tab = state.activeTab;
+  if (tab === 'scenario') parts.push('t=sc');
+  else if (tab === 'memory') parts.push('t=mem');
+  if (state.exchangeRate !== defaultExchangeRate) parts.push('fx=' + state.exchangeRate);
+
+  if (tab === 'simulator' || tab === 'scenario') {
+    const p = tab === 'simulator' ? state.sim : state.scenarios[state.activeScenario];
+    const d = tab === 'simulator' ? defaultSim : presets[state.activeScenario];
+    if (tab === 'scenario' && state.activeScenario !== 0) parts.push('si=' + state.activeScenario);
+    simKeyMap.forEach(function(kv) {
+      if (p[kv[1]] !== d[kv[1]]) parts.push(kv[0] + '=' + p[kv[1]]);
+    });
+    if (p.claudeWriteType !== d.claudeWriteType) parts.push('wt=' + p.claudeWriteType);
+  } else if (tab === 'memory') {
+    const m = state.mem, d = defaultMem;
+    memKeyMap.forEach(function(kv) {
+      if (m[kv[1]] !== d[kv[1]]) parts.push(kv[0] + '=' + m[kv[1]]);
+    });
+    if (m.ltmRetrievalTiming !== d.ltmRetrievalTiming) parts.push('mT=' + m.ltmRetrievalTiming);
+    if (m.useOverrideStrategy !== d.useOverrideStrategy) parts.push('mO=' + (m.useOverrideStrategy ? 1 : 0));
+    if (m.extractionEnabled !== d.extractionEnabled) parts.push('mX=' + (m.extractionEnabled ? 1 : 0));
+  }
+  return parts.join('&');
+}
+
+function decodeState() {
+  const h = location.hash.replace(/^#/, '');
+  if (!h) return;
+  // Backward-compat: bare tab name like #scenario
+  if (h === 'simulator' || h === 'scenario' || h === 'memory') {
+    state.activeTab = h;
+    return;
+  }
+  const params = {};
+  h.split('&').forEach(function(kv) {
+    const eq = kv.indexOf('=');
+    if (eq < 0) return;
+    try {
+      const k = decodeURIComponent(kv.slice(0, eq));
+      const v = decodeURIComponent(kv.slice(eq + 1));
+      if (k) params[k] = v;
+    } catch (e) { /* skip malformed */ }
+  });
+
+  if (params.t === 'sc') state.activeTab = 'scenario';
+  else if (params.t === 'mem') state.activeTab = 'memory';
+
+  if (params.fx != null && !isNaN(Number(params.fx))) state.exchangeRate = Number(params.fx);
+
+  if (state.activeTab === 'scenario' && params.si != null) {
+    const idx = Number(params.si);
+    if (Number.isInteger(idx) && idx >= 0 && idx < state.scenarios.length) state.activeScenario = idx;
+  }
+
+  if (state.activeTab === 'simulator' || state.activeTab === 'scenario') {
+    const p = state.activeTab === 'simulator' ? state.sim : state.scenarios[state.activeScenario];
+    simKeyMap.forEach(function(kv) {
+      const raw = params[kv[0]];
+      if (raw != null && raw !== '' && !isNaN(Number(raw))) p[kv[1]] = Number(raw);
+    });
+    if (params.wt === '5m' || params.wt === '1h') p.claudeWriteType = params.wt;
+  } else if (state.activeTab === 'memory') {
+    const m = state.mem;
+    memKeyMap.forEach(function(kv) {
+      const raw = params[kv[0]];
+      if (raw != null && raw !== '' && !isNaN(Number(raw))) m[kv[1]] = Number(raw);
+    });
+    if (params.mT === 'every' || params.mT === 'first') m.ltmRetrievalTiming = params.mT;
+    if (params.mO === '0' || params.mO === '1') m.useOverrideStrategy = params.mO === '1';
+    if (params.mX === '0' || params.mX === '1') m.extractionEnabled = params.mX === '1';
+  }
+}
+
+function updateShareUrl() {
+  const enc = encodeState();
+  const newHash = enc ? '#' + enc : '';
+  if (location.hash === newHash) return;
+  try {
+    history.replaceState(null, '', window.location.pathname + window.location.search + newHash);
+  } catch (e) { /* ignore */ }
+}
+
+function showToast(msg) {
+  let t = document.getElementById('share-toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'share-toast';
+    t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1e293b;color:#f8fafc;padding:10px 18px;border-radius:8px;font-size:13px;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:9999;opacity:0;transition:opacity 0.2s;pointer-events:none;';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  requestAnimationFrame(function() { t.style.opacity = '1'; });
+  clearTimeout(showToast._timer);
+  showToast._timer = setTimeout(function() { t.style.opacity = '0'; }, 1800);
+}
+
+function copyShareUrl() {
+  const enc = encodeState();
+  const url = window.location.origin + window.location.pathname + window.location.search + (enc ? '#' + enc : '');
+  const done = function() { showToast('\u5171\u6709URL\u3092\u30B3\u30D4\u30FC\u3057\u307E\u3057\u305F'); };
+  const fail = function() { window.prompt('\u3053\u306EURL\u3092\u30B3\u30D4\u30FC\u3057\u3066\u5171\u6709\u3057\u3066\u304F\u3060\u3055\u3044', url); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(done).catch(fail);
+  } else {
+    fail();
+  }
+}
 
 // \u2500\u2500 Helpers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 function fJ(usd) { return (Number(usd) * state.exchangeRate).toLocaleString('ja-JP', { minimumFractionDigits: 0, maximumFractionDigits: 0 }); }
@@ -799,8 +938,14 @@ function render() {
           '<svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>' +
         '</a>' +
       '</div>' +
-      '<div class="flex items-center gap-2"><span class="text-xs text-slate-400">\u70BA\u66FF:</span><span class="text-sm text-slate-500">&yen;</span>' +
-        '<input type="number" data-key="exchangeRate" value="' + state.exchangeRate + '" class="w-20 border border-slate-200 rounded-lg px-2 py-1 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/30" />' +
+      '<div class="flex items-center gap-3">' +
+        '<button id="share-btn" class="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 bg-white border border-slate-200 hover:border-slate-400 hover:text-slate-900 rounded-lg transition-colors" title="\u73FE\u5728\u306E\u30D1\u30E9\u30E1\u30FC\u30BF\u30FC\u3092URL\u306B\u542B\u3081\u3066\u5171\u6709">' +
+          '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg>' +
+          '\u5171\u6709URL' +
+        '</button>' +
+        '<div class="flex items-center gap-2"><span class="text-xs text-slate-400">\u70BA\u66FF:</span><span class="text-sm text-slate-500">&yen;</span>' +
+          '<input type="number" data-key="exchangeRate" value="' + state.exchangeRate + '" class="w-20 border border-slate-200 rounded-lg px-2 py-1 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/30" />' +
+        '</div>' +
       '</div>' +
     '</div>' +
     '<nav class="flex gap-1">' +
@@ -1163,6 +1308,13 @@ function render() {
     });
   });
   // Memory extraction toggle removed — now linked to LTM Strategy (Override = ON, Default = OFF)
+
+  // Share URL button
+  const shareBtn = document.getElementById('share-btn');
+  if (shareBtn) shareBtn.addEventListener('click', copyShareUrl);
+
+  // Reflect current state into the URL hash
+  updateShareUrl();
 }
 
 let _renderTimer = null;
@@ -1187,11 +1339,10 @@ function restoreFocus(key, prefix) {
 }
 
 // \u2500\u2500 Bootstrap \u2500\u2500
-window.addEventListener('popstate', function() {
-  var h = location.hash.replace('#','');
-  if (['simulator','scenario','memory'].indexOf(h) !== -1) { state.activeTab = h; render(); }
-});
+decodeState();
 render();
+window.addEventListener('popstate', function() { decodeState(); render(); });
+window.addEventListener('hashchange', function() { decodeState(); render(); });
 </script>
 </body>
 </html>`;
