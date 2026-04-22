@@ -242,29 +242,30 @@ const memKeyMap = [
   ['mXo', 'extractionOutputTokens'],
 ];
 
-function encodeState() {
+function encodeState(full) {
   const parts = [];
   const tab = state.activeTab;
-  if (tab === 'scenario') parts.push('t=sc');
+  if (full) parts.push('t=' + (tab === 'simulator' ? 'sim' : tab === 'scenario' ? 'sc' : 'mem'));
+  else if (tab === 'scenario') parts.push('t=sc');
   else if (tab === 'memory') parts.push('t=mem');
-  if (state.exchangeRate !== defaultExchangeRate) parts.push('fx=' + state.exchangeRate);
+  if (full || state.exchangeRate !== defaultExchangeRate) parts.push('fx=' + state.exchangeRate);
 
   if (tab === 'simulator' || tab === 'scenario') {
     const p = tab === 'simulator' ? state.sim : state.scenarios[state.activeScenario];
     const d = tab === 'simulator' ? defaultSim : presets[state.activeScenario];
-    if (tab === 'scenario' && state.activeScenario !== 0) parts.push('si=' + state.activeScenario);
+    if (tab === 'scenario' && (full || state.activeScenario !== 0)) parts.push('si=' + state.activeScenario);
     simKeyMap.forEach(function(kv) {
-      if (p[kv[1]] !== d[kv[1]]) parts.push(kv[0] + '=' + p[kv[1]]);
+      if (full || p[kv[1]] !== d[kv[1]]) parts.push(kv[0] + '=' + p[kv[1]]);
     });
-    if (p.claudeWriteType !== d.claudeWriteType) parts.push('wt=' + p.claudeWriteType);
+    if (full || p.claudeWriteType !== d.claudeWriteType) parts.push('wt=' + p.claudeWriteType);
   } else if (tab === 'memory') {
     const m = state.mem, d = defaultMem;
     memKeyMap.forEach(function(kv) {
-      if (m[kv[1]] !== d[kv[1]]) parts.push(kv[0] + '=' + m[kv[1]]);
+      if (full || m[kv[1]] !== d[kv[1]]) parts.push(kv[0] + '=' + m[kv[1]]);
     });
-    if (m.ltmRetrievalTiming !== d.ltmRetrievalTiming) parts.push('mT=' + m.ltmRetrievalTiming);
-    if (m.useOverrideStrategy !== d.useOverrideStrategy) parts.push('mO=' + (m.useOverrideStrategy ? 1 : 0));
-    if (m.extractionEnabled !== d.extractionEnabled) parts.push('mX=' + (m.extractionEnabled ? 1 : 0));
+    if (full || m.ltmRetrievalTiming !== d.ltmRetrievalTiming) parts.push('mT=' + m.ltmRetrievalTiming);
+    if (full || m.useOverrideStrategy !== d.useOverrideStrategy) parts.push('mO=' + (m.useOverrideStrategy ? 1 : 0));
+    if (full || m.extractionEnabled !== d.extractionEnabled) parts.push('mX=' + (m.extractionEnabled ? 1 : 0));
   }
   return parts.join('&');
 }
@@ -290,6 +291,7 @@ function decodeState() {
 
   if (params.t === 'sc') state.activeTab = 'scenario';
   else if (params.t === 'mem') state.activeTab = 'memory';
+  else if (params.t === 'sim') state.activeTab = 'simulator';
 
   if (params.fx != null && !isNaN(Number(params.fx))) state.exchangeRate = Number(params.fx);
 
@@ -341,7 +343,7 @@ function showToast(msg) {
 }
 
 function copyShareUrl() {
-  const enc = encodeState();
+  const enc = encodeState(true);
   const url = window.location.origin + window.location.pathname + window.location.search + (enc ? '#' + enc : '');
   const done = function() { showToast('\u5171\u6709URL\u3092\u30B3\u30D4\u30FC\u3057\u307E\u3057\u305F'); };
   const fail = function() { window.prompt('\u3053\u306EURL\u3092\u30B3\u30D4\u30FC\u3057\u3066\u5171\u6709\u3057\u3066\u304F\u3060\u3055\u3044', url); };
