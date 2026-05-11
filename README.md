@@ -1,6 +1,6 @@
 # AI Cost Strategy Simulator
 
-Gemini / Claude / OpenAI / Amazon Nova の11モデルにおけるコンテキストキャッシュ利用時のコストを比較するシミュレーターです。
+Gemini / Claude / OpenAI / Amazon Nova の12モデルにおけるコンテキストキャッシュ利用時のコストを比較するシミュレーターです。
 
 ## 起動方法
 
@@ -28,13 +28,13 @@ deno run --allow-net --allow-read price_simulation_deno.ts
 
 ```jsonc
 {
-  "gemini25Flash": {
-    "name": "Gemini 2.5 Flash",
-    "input": 0.30,         // 通常入力 ($/MTok)
-    "cacheWrite5m": 0.30,  // 書き込み 5分TTL ($/MTok)
-    "cacheWrite1h": 0.30,  // 書き込み 1時間TTL ($/MTok)
-    "cachedInput": 0.03,   // キャッシュ読み出し ($/MTok)
-    "output": 2.50,        // 出力 ($/MTok)
+  "gemini31FlashLite": {
+    "name": "Gemini 3.1 Flash Lite",
+    "input": 0.25,         // 通常入力 ($/MTok)
+    "cacheWrite5m": 0.25,  // 書き込み 5分TTL ($/MTok)
+    "cacheWrite1h": 0.25,  // 書き込み 1時間TTL ($/MTok)
+    "cachedInput": 0.025,  // キャッシュ読み出し ($/MTok)
+    "output": 1.50,        // 出力 ($/MTok)
     "storage": 1.00,       // 保管料 ($/MTok/時間)
     ...
   }
@@ -79,4 +79,4 @@ APIログの実測値をそのまま入力できる設計です。
 - [OpenAI API Pricing](https://openai.com/api/pricing/)
 - [Amazon Bedrock Pricing](https://aws.amazon.com/bedrock/pricing/)
 
-2026年2月時点の公式価格を反映。
+2026年5月時点の公式価格を反映。

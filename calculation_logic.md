@@ -2,7 +2,7 @@
 
 ## 概要
 
-本シミュレーターは、Gemini（2.5 Flash / 3 Flash / 3 Pro）、Claude（Haiku 4.5 / Sonnet 4.5 / Opus 4.5）、OpenAI（GPT-5 Mini / GPT-5）、Amazon Nova（Micro / Lite / Pro）の11モデルにおいて、**コンテキストキャッシュを利用した場合**の運用コストを比較するツールです。
+本シミュレーターは、Gemini（2.5 Flash / 3 Flash / 3.1 Flash Lite / 3.1 Pro）、Claude（Haiku 4.5 / Sonnet 4.6 / Opus 4.7）、OpenAI（GPT-5.4 Mini / GPT-5.4）、Amazon Nova（Micro / Lite / Pro）の12モデルにおいて、**コンテキストキャッシュを利用した場合**の運用コストを比較するツールです。
 
 ---
 

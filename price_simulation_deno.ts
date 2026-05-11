@@ -621,13 +621,13 @@ function downloadExcel() {
 
   // ── Platform sheets (Gemini / Claude / OpenAI / Bedrock) ──
   var platforms = [
-    { name: 'Gemini', keys: ['gemini25Flash','gemini30Flash','gemini3Pro'],
+    { name: 'Gemini', keys: ['gemini25Flash','gemini30Flash','gemini31FlashLite','gemini31Pro'],
       useWriteFormula: false, wpd: function() { return 1; },
       remarks: ['\u6C38\u7D9A\u30AD\u30E3\u30C3\u30B7\u30E5 \u2192 \u66F8\u8FBC1\u56DE/\u65E5', 'Storage\u8AB2\u91D1\u3042\u308A'] },
-    { name: 'Claude', keys: ['claude45Haiku','claude45Sonnet','claude45Opus'],
+    { name: 'Claude', keys: ['claude45Haiku','claude46Sonnet','claude47Opus'],
       useWriteFormula: true, wpd: function() { return getWpd('claude', p); },
       remarks: ['TTL\u306B\u5FDC\u3058\u3066Write\u5358\u4FA1\u5207\u66FF', 'Sliding window: TTL\u5185\u30EA\u30AF\u30A8\u30B9\u30C8\u3067\u7DAD\u6301', 'Storage\u8AB2\u91D1\u306A\u3057'] },
-    { name: 'OpenAI', keys: ['gpt5Mini','gpt5'],
+    { name: 'OpenAI', keys: ['gpt54Mini','gpt54'],
       useWriteFormula: false, wpd: function() { return getWpd('gpt', p); },
       remarks: ['\u81EA\u52D5\u30AD\u30E3\u30C3\u30B7\u30E5 (~5\u5206TTL)', 'Write=Input\u540C\u984D', 'Storage\u8AB2\u91D1\u306A\u3057'] },
     { name: 'Bedrock', keys: ['novaMicro','novaLite','novaPro'],

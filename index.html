@@ -46,8 +46,19 @@ const pricingData = {
     "storage": 1.00,
     "color": "#34A853"
   },
-  "gemini3Pro": {
-    "name": "Gemini 3 Pro",
+  "gemini31FlashLite": {
+    "name": "Gemini 3.1 Flash Lite",
+    "platform": "Vertex AI",
+    "input": 0.25,
+    "cacheWrite5m": 0.25,
+    "cacheWrite1h": 0.25,
+    "cachedInput": 0.025,
+    "output": 1.50,
+    "storage": 1.00,
+    "color": "#FBBC04"
+  },
+  "gemini31Pro": {
+    "name": "Gemini 3.1 Pro",
     "platform": "Vertex AI",
     "input": 2.00,
     "cacheWrite5m": 2.00,
@@ -68,8 +79,8 @@ const pricingData = {
     "storage": 0,
     "color": "#D97706"
   },
-  "claude45Sonnet": {
-    "name": "Claude Sonnet 4.5",
+  "claude46Sonnet": {
+    "name": "Claude Sonnet 4.6",
     "platform": "Anthropic",
     "input": 3.00,
     "cacheWrite5m": 3.75,
@@ -79,8 +90,8 @@ const pricingData = {
     "storage": 0,
     "color": "#8B5CF6"
   },
-  "claude45Opus": {
-    "name": "Claude Opus 4.5",
+  "claude47Opus": {
+    "name": "Claude Opus 4.7",
     "platform": "Anthropic",
     "input": 5.00,
     "cacheWrite5m": 6.25,
@@ -90,25 +101,25 @@ const pricingData = {
     "storage": 0,
     "color": "#DC2626"
   },
-  "gpt5Mini": {
-    "name": "GPT-5 Mini",
+  "gpt54Mini": {
+    "name": "GPT-5.4 Mini",
     "platform": "OpenAI",
-    "input": 0.25,
-    "cacheWrite5m": 0.25,
-    "cacheWrite1h": 0.25,
-    "cachedInput": 0.025,
-    "output": 2.00,
+    "input": 0.75,
+    "cacheWrite5m": 0.75,
+    "cacheWrite1h": 0.75,
+    "cachedInput": 0.075,
+    "output": 4.50,
     "storage": 0,
     "color": "#10A37F"
   },
-  "gpt5": {
-    "name": "GPT-5",
+  "gpt54": {
+    "name": "GPT-5.4",
     "platform": "OpenAI",
-    "input": 1.25,
-    "cacheWrite5m": 1.25,
-    "cacheWrite1h": 1.25,
-    "cachedInput": 0.125,
-    "output": 10.00,
+    "input": 2.50,
+    "cacheWrite5m": 2.50,
+    "cacheWrite1h": 2.50,
+    "cachedInput": 0.25,
+    "output": 15.00,
     "storage": 0,
     "color": "#171717"
   },
@@ -725,13 +736,13 @@ function downloadExcel() {
 
   // ── Platform sheets (Gemini / Claude / OpenAI / Bedrock) ──
   var platforms = [
-    { name: 'Gemini', keys: ['gemini25Flash','gemini30Flash','gemini3Pro'],
+    { name: 'Gemini', keys: ['gemini25Flash','gemini30Flash','gemini31FlashLite','gemini31Pro'],
       useWriteFormula: false, wpd: function() { return 1; },
       remarks: ['\u6C38\u7D9A\u30AD\u30E3\u30C3\u30B7\u30E5 \u2192 \u66F8\u8FBC1\u56DE/\u65E5', 'Storage\u8AB2\u91D1\u3042\u308A'] },
-    { name: 'Claude', keys: ['claude45Haiku','claude45Sonnet','claude45Opus'],
+    { name: 'Claude', keys: ['claude45Haiku','claude46Sonnet','claude47Opus'],
       useWriteFormula: true, wpd: function() { return getWpd('claude', p); },
       remarks: ['TTL\u306B\u5FDC\u3058\u3066Write\u5358\u4FA1\u5207\u66FF', 'Sliding window: TTL\u5185\u30EA\u30AF\u30A8\u30B9\u30C8\u3067\u7DAD\u6301', 'Storage\u8AB2\u91D1\u306A\u3057'] },
-    { name: 'OpenAI', keys: ['gpt5Mini','gpt5'],
+    { name: 'OpenAI', keys: ['gpt54Mini','gpt54'],
       useWriteFormula: false, wpd: function() { return getWpd('gpt', p); },
       remarks: ['\u81EA\u52D5\u30AD\u30E3\u30C3\u30B7\u30E5 (~5\u5206TTL)', 'Write=Input\u540C\u984D', 'Storage\u8AB2\u91D1\u306A\u3057'] },
     { name: 'Bedrock', keys: ['novaMicro','novaLite','novaPro'],
