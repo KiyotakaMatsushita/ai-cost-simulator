@@ -683,7 +683,7 @@ function downloadExcel() {
     // Row 11-17: Cost breakdown (USD)
     s('A11', '\u3010\u30B3\u30B9\u30C8\u5185\u8A33 (USD)\u3011');
     mods.forEach(function(o,i) { s(cols[i]+'11', o.m.name); });
-    s('A12', '\u30AD\u30E3\u30C3\u30B7\u30E5\u518D\u4F5C\u6210 (C\u00D7TTL)');
+    s('A12', '\u30AD\u30E3\u30C3\u30B7\u30E5\u518D\u4F5C\u6210 (C\u00D7TTL) \u203B\u53C2\u8003\u30FB\u5408\u8A08\u5916');
     s('A13', 'Storage (\u4FDD\u7BA1\u6599)');
     s('A14', 'Read (\u30AD\u30E3\u30C3\u30B7\u30E5\u8AAD\u51FA)');
     s('A15', 'CW Write (\u30EA\u30AF\u30A8\u30B9\u30C8\u66F8\u8FBC)');
@@ -729,7 +729,7 @@ function downloadExcel() {
     s('A23', '1\u30EA\u30AF\u30A8\u30B9\u30C8\u5358\u4FA1 (JPY)');
     mods.forEach(function(o, i) {
       var c = cols[i];
-      fm(c+'21', 'SUM('+c+'12:'+c+'18)');
+      fm(c+'21', 'SUM('+c+'13:'+c+'18)');
       fm(c+'22', c+'21*'+P+'4');
       fm(c+'23', 'IF('+P+'20>0,'+c+'22/'+P+'20,0)');
     });
