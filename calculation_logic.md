@@ -13,7 +13,8 @@ APIログの実測値（`input_tokens`, `output_tokens`, `cache_creation_input_t
 | 記号 | パラメーター名 | デフォルト値 | 説明 |
 |------|---------------|-------------|------|
 | P | 入力トークン/req | 3,000 tokens | 1リクエストあたりの入力トークン数（非キャッシュ部分） |
-| O | 出力トークン/req | 1,000 tokens | 1リクエストあたりの出力トークン数 |
+| O | 出力トークン/req | 1,000 tokens | 1リクエストあたりの可視出力トークン数 |
+| Rs | 推論トークン/req | 0 tokens | 1リクエストあたりの推論/思考(thinking/reasoning)トークン数。Gemini 3.x、Claude extended/adaptive thinking、GPT-5.x reasoning model 等で発生。**output 単価で課金される不可視トークン**（API レスポンスの `usage.output_tokens_details.reasoning_tokens` 等） |
 | CW | キャッシュ書込/req | 5,000 tokens | 1リクエストあたりのキャッシュ書込トークン数（差分。TTL内の場合の`cache_creation_input_tokens`） |
 | CR | キャッシュ読込/req | 10,000 tokens | 1リクエストあたりのキャッシュ読込トークン数（`cache_read_input_tokens`） |
 | C | 初回キャッシュ書込 | 15,000 tokens | 単発のキャッシュ書込トークン数（システムプロンプト等。TTL切れ時に再書込される） |
@@ -66,7 +67,7 @@ APIログの実測値（`input_tokens`, `output_tokens`, `cache_creation_input_t
 
 ---
 
-## 計算式（6費目）
+## 計算式（7費目）
 
 ### 1. キャッシュ再作成費（Cache Re-creation Cost）
 
@@ -165,19 +166,41 @@ Prompt Cost = (P / 1M) × InputPrice × (U × N)
 
 ### 5. 出力費（Output Cost）
 
-モデルの生成した回答トークンに対するコスト。
+モデルの生成した可視出力トークンに対するコスト。
 
 ```
 Output Cost = (O / 1M) × OutputPrice × (U × N)
 ```
 
-**例: Claude Sonnet 4.5**
+**例: Claude Sonnet 4.6**
 ```
 = (1,000 / 1M) × $15.00 × 10,000
 = $150.00
 ```
 
-### 6. 保管料（Storage Cost）
+### 6. 推論費（Reasoning Cost）
+
+推論モデルが回答前に内部で生成する **不可視の思考/推論トークン** のコスト。
+
+| プロバイダー | 呼称 | 課金 |
+|---|---|---|
+| Gemini 3.x | Thinking tokens | output 単価で課金（LOW/MEDIUM/HIGH レベル指定可） |
+| Claude 4.6/4.7 | Extended / Adaptive thinking | output 単価で課金（effort: low/standard/high/xhigh/max） |
+| OpenAI GPT-5.x | Reasoning tokens | output 単価で課金 |
+
+```
+Reasoning Cost = (Rs / 1M) × OutputPrice × (U × N)
+```
+
+不可視トークンながら、設定によっては可視出力の **2〜10倍**（HIGH thinking では 10〜40倍）発生し、コスト構造を支配することがあるため独立して試算可能。Nova 等の非推論モデルでは `Rs = 0` のまま運用してください。
+
+**例: Claude Sonnet 4.6（Rs=3,000）**
+```
+= (3,000 / 1M) × $15.00 × 10,000
+= $450.00
+```
+
+### 7. 保管料（Storage Cost）
 
 キャッシュを保持している時間に対する課金。**Geminiのみ発生、Claude/OpenAI/Novaは無料。**
 
@@ -193,7 +216,7 @@ Gemini:   Storage = (C / 1M) × StoragePrice × (h × D) × 1
 キャッシュ再作成費（初回書込）は合計外の参考値として別途表示されます。
 
 ```
-Total = CW Write + CR Read + Prompt + Output + Storage
+Total = CW Write + CR Read + Prompt + Output + Reasoning + Storage
 （参考）初回キャッシュ書込 = Cache Re-creation（合計外）
 ```
 

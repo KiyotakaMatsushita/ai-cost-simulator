@@ -47,19 +47,19 @@ const pricingData = __PRICING_DATA__;
 const presets = [
   {
     name: '\u5C0F\u898F\u6A21 PoC',
-    promptTokens: 2000, outputTokens: 500, cacheWriteTokens: 3000, cacheReadTokens: 8000, cacheTokens: 10000,
+    promptTokens: 2000, outputTokens: 500, reasoningTokens: 0, cacheWriteTokens: 3000, cacheReadTokens: 8000, cacheTokens: 10000,
     userCount: 100, reqPerUser: 5, testDays: 14, hoursPerDay: 24,
     claudeWriteType: '5m', cacheWritesPerDay: 0,
   },
   {
     name: '\u672C\u756A\u904B\u7528',
-    promptTokens: 3000, outputTokens: 1000, cacheWriteTokens: 5000, cacheReadTokens: 15000, cacheTokens: 20000,
+    promptTokens: 3000, outputTokens: 1000, reasoningTokens: 0, cacheWriteTokens: 5000, cacheReadTokens: 15000, cacheTokens: 20000,
     userCount: 1000, reqPerUser: 10, testDays: 30, hoursPerDay: 24,
     claudeWriteType: '5m', cacheWritesPerDay: 0,
   },
   {
     name: '\u5927\u898F\u6A21\u5C55\u958B',
-    promptTokens: 5000, outputTokens: 2000, cacheWriteTokens: 10000, cacheReadTokens: 30000, cacheTokens: 40000,
+    promptTokens: 5000, outputTokens: 2000, reasoningTokens: 0, cacheWriteTokens: 10000, cacheReadTokens: 30000, cacheTokens: 40000,
     userCount: 10000, reqPerUser: 20, testDays: 30, hoursPerDay: 24,
     claudeWriteType: '5m', cacheWritesPerDay: 0,
   },
@@ -85,7 +85,7 @@ const state = {
   exchangeRate: 155.00,
   // Simulator tab
   sim: {
-    promptTokens: 3000, outputTokens: 1000, cacheWriteTokens: 5000, cacheReadTokens: 10000, cacheTokens: 15000,
+    promptTokens: 3000, outputTokens: 1000, reasoningTokens: 0, cacheWriteTokens: 5000, cacheReadTokens: 10000, cacheTokens: 15000,
     userCount: 1000, reqPerUser: 10, testDays: 7, hoursPerDay: 24,
     claudeWriteType: '5m', cacheWritesPerDay: 0,
   },
@@ -118,6 +118,7 @@ const defaultExchangeRate = state.exchangeRate;
 const simKeyMap = [
   ['P',  'promptTokens'],
   ['O',  'outputTokens'],
+  ['Rs', 'reasoningTokens'],
   ['W',  'cacheWriteTokens'],
   ['R',  'cacheReadTokens'],
   ['C',  'cacheTokens'],
@@ -292,9 +293,10 @@ function modelProps(key, m, p) {
   const cM = p.cacheTokens / 1e6;
   const pM = p.promptTokens / 1e6;
   const oM = p.outputTokens / 1e6;
+  const rsM = (p.reasoningTokens || 0) / 1e6;
   const wp = isClaude ? (p.claudeWriteType === '1h' ? m.cacheWrite1h : m.cacheWrite5m) : m.input;
   const wpd = getWpd(key, p);
-  return { isClaude, isOpenAI: key.includes('gpt'), isNova: key.includes('nova'), isGemini, cwM, crM, cM, pM, oM, wp, wpd };
+  return { isClaude, isOpenAI: key.includes('gpt'), isNova: key.includes('nova'), isGemini, cwM, crM, cM, pM, oM, rsM, wp, wpd };
 }
 
 function computeResults(p) {
@@ -309,13 +311,14 @@ function computeResults(p) {
     const rd = mp.crM * m.cachedInput * totalReqs;
     const pr = mp.pM * m.input * totalReqs;
     const ou = mp.oM * m.output * totalReqs;
-    const tot = cwCost + st + rd + pr + ou;
+    const rs = mp.rsM * m.output * totalReqs;
+    const tot = cwCost + st + rd + pr + ou + rs;
     const pReq = totalReqs > 0 ? tot / totalReqs : 0;
-    const noC = (mp.crM + mp.cwM + mp.pM) * m.input * totalReqs + ou;
+    const noC = (mp.crM + mp.cwM + mp.pM) * m.input * totalReqs + ou + rs;
     return {
       ...m, id: key, isClaude: mp.isClaude, isOpenAI: mp.isOpenAI, isNova: mp.isNova, isGemini: mp.isGemini,
       writePrice: mp.wp, writesPerDay: mp.wpd, ttlWrite: ttlWr, cwWrite: cwCost, storageCost: st,
-      read: rd, prompt: pr, outputCost: ou, total: tot, perReq: pReq, noCache: noC,
+      read: rd, prompt: pr, outputCost: ou, reasoning: rs, total: tot, perReq: pReq, noCache: noC,
       savPct: noC > 0 ? (((noC - tot) / noC) * 100).toFixed(1) : '0.0', savUSD: noC - tot,
     };
   });
@@ -331,7 +334,8 @@ function computeTimeSeries(p) {
     const dRead = mp.crM * m.cachedInput * dailyReqs;
     const dPrompt = mp.pM * m.input * dailyReqs;
     const dOutput = mp.oM * m.output * dailyReqs;
-    const daily = dCwWrite + dStorage + dRead + dPrompt + dOutput;
+    const dReasoning = mp.rsM * m.output * dailyReqs;
+    const daily = dCwWrite + dStorage + dRead + dPrompt + dOutput + dReasoning;
     const pts = [];
     for (let d = 0; d <= p.testDays; d++) pts.push({ day: d, usd: daily * d });
     return { ...m, id: key, points: pts, daily, total: daily * p.testDays };
@@ -493,6 +497,7 @@ function paramGrid(prefix, p) {
     [
       ['\u5165\u529B\u30C8\u30FC\u30AF\u30F3/req', 'promptTokens'],
       ['\u51FA\u529B\u30C8\u30FC\u30AF\u30F3/req', 'outputTokens'],
+      ['\u63A8\u8AD6\u30C8\u30FC\u30AF\u30F3/req (Rs)', 'reasoningTokens'],
       ['\u30AD\u30E3\u30C3\u30B7\u30E5\u66F8\u8FBC/req', 'cacheWriteTokens'],
       ['\u30AD\u30E3\u30C3\u30B7\u30E5\u8AAD\u8FBC/req', 'cacheReadTokens'],
       ['\u521D\u56DE\u30AD\u30E3\u30C3\u30B7\u30E5\u66F8\u8FBC', 'cacheTokens'],
@@ -595,27 +600,29 @@ function downloadExcel() {
     ['\u70BA\u66FF\u30EC\u30FC\u30C8 (\u00A5/$)', state.exchangeRate],          // B4
     ['\u5165\u529B\u30C8\u30FC\u30AF\u30F3/req (P)', p.promptTokens],           // B5
     ['\u51FA\u529B\u30C8\u30FC\u30AF\u30F3/req (O)', p.outputTokens],           // B6
-    ['\u30AD\u30E3\u30C3\u30B7\u30E5\u66F8\u8FBC/req (CW)', p.cacheWriteTokens || 0], // B7
-    ['\u30AD\u30E3\u30C3\u30B7\u30E5\u8AAD\u8FBC/req (CR)', p.cacheReadTokens || 0], // B8
-    ['\u521D\u56DE\u30AD\u30E3\u30C3\u30B7\u30E5\u66F8\u8FBC (C)', p.cacheTokens],   // B9
-    ['\u5229\u7528\u8005\u6570 (U)', p.userCount],                       // B10
-    ['\u56DE\u6570/\u30E6\u30FC\u30B6\u30FC (N)', p.reqPerUser],                 // B11
-    ['\u30C6\u30B9\u30C8\u65E5\u6570 (D)', p.testDays],                     // B12
-    ['\u7A3C\u52D5\u6642\u9593/\u65E5 (h)', p.hoursPerDay],                  // B13
-    ['Claude Write TTL (1=1h, 0=5m)', p.claudeWriteType === '1h' ? 1 : 0], // B14
-    ['\u521D\u56DE\u66F8\u8FBC\u56DE\u6570/\u65E5 (0=\u81EA\u52D5)', p.cacheWritesPerDay || 0], // B15
-    ['\u521D\u56DE\u66F8\u8FBC\u56DE\u6570/\u65E5 (\u5B9F\u52B9\u5024)', getWpd('claude', p)],     // B16
+    ['\u63A8\u8AD6\u30C8\u30FC\u30AF\u30F3/req (Rs)', p.reasoningTokens || 0],   // B7
+    ['\u30AD\u30E3\u30C3\u30B7\u30E5\u66F8\u8FBC/req (CW)', p.cacheWriteTokens || 0], // B8
+    ['\u30AD\u30E3\u30C3\u30B7\u30E5\u8AAD\u8FBC/req (CR)', p.cacheReadTokens || 0], // B9
+    ['\u521D\u56DE\u30AD\u30E3\u30C3\u30B7\u30E5\u66F8\u8FBC (C)', p.cacheTokens],   // B10
+    ['\u5229\u7528\u8005\u6570 (U)', p.userCount],                       // B11
+    ['\u56DE\u6570/\u30E6\u30FC\u30B6\u30FC (N)', p.reqPerUser],                 // B12
+    ['\u30C6\u30B9\u30C8\u65E5\u6570 (D)', p.testDays],                     // B13
+    ['\u7A3C\u52D5\u6642\u9593/\u65E5 (h)', p.hoursPerDay],                  // B14
+    ['Claude Write TTL (1=1h, 0=5m)', p.claudeWriteType === '1h' ? 1 : 0], // B15
+    ['\u521D\u56DE\u66F8\u8FBC\u56DE\u6570/\u65E5 (0=\u81EA\u52D5)', p.cacheWritesPerDay || 0], // B16
+    ['\u521D\u56DE\u66F8\u8FBC\u56DE\u6570/\u65E5 (\u5B9F\u52B9\u5024)', getWpd('claude', p)],     // B17
   ];
   paramList.forEach(function(row, i) { ps_s('A'+(4+i), row[0]); ps_n('B'+(4+i), row[1]); });
-  ps_s('A18', '\u3010\u5C0E\u51FA\u5024\u3011');
-  ps_s('A19', '\u7DCF\u30EA\u30AF\u30A8\u30B9\u30C8\u6570'); ps_f('B19', 'B10*B11');
-  ps_s('A20', '\u7DCF\u4FDD\u7BA1\u6642\u9593 (h)'); ps_f('B20', 'B13*B12');
+  ps_s('A19', '\u3010\u5C0E\u51FA\u5024\u3011');
+  ps_s('A20', '\u7DCF\u30EA\u30AF\u30A8\u30B9\u30C8\u6570'); ps_f('B20', 'B11*B12');
+  ps_s('A21', '\u7DCF\u4FDD\u7BA1\u6642\u9593 (h)'); ps_f('B21', 'B14*B13');
   ps_s('D3', '\u5099\u8003');
-  ps_s('D7', 'Gemini\u306F0\u306B\u81EA\u52D5\u8A2D\u5B9A');
-  ps_s('D8', 'Gemini\u306F\u521D\u56DE\u66F8\u8FBC\u5024\u3092\u4F7F\u7528');
-  ps_s('D14', '1=1\u6642\u9593TTL, 0=5\u5206TTL');
-  ps_s('D15', '0=\u30EA\u30AF\u30A8\u30B9\u30C8\u983B\u5EA6\u304B\u3089\u81EA\u52D5\u8A08\u7B97, >0=\u624B\u52D5\u6307\u5B9A');
-  ps['!ref'] = 'A1:D20';
+  ps_s('D7', '\u63A8\u8AD6/\u601D\u8003\u30C8\u30FC\u30AF\u30F3 (output\u5358\u4FA1\u3067\u8AB2\u91D1)');
+  ps_s('D8', 'Gemini\u306F0\u306B\u81EA\u52D5\u8A2D\u5B9A');
+  ps_s('D9', 'Gemini\u306F\u521D\u56DE\u66F8\u8FBC\u5024\u3092\u4F7F\u7528');
+  ps_s('D15', '1=1\u6642\u9593TTL, 0=5\u5206TTL');
+  ps_s('D16', '0=\u30EA\u30AF\u30A8\u30B9\u30C8\u983B\u5EA6\u304B\u3089\u81EA\u52D5\u8A08\u7B97, >0=\u624B\u52D5\u6307\u5B9A');
+  ps['!ref'] = 'A1:D21';
   ps['!cols'] = [{wch:32},{wch:14},{wch:2},{wch:40}];
   XLSX.utils.book_append_sheet(wb, ps, '\u30D1\u30E9\u30E1\u30FC\u30BF\u30FC');
 
@@ -663,7 +670,7 @@ function downloadExcel() {
       var c = cols[i];
       n(c+'4', o.m.input);
       if (plat.useWriteFormula) {
-        fm(c+'5', 'IF('+P+'14=1,'+o.m.cacheWrite1h+','+o.m.cacheWrite5m+')');
+        fm(c+'5', 'IF('+P+'15=1,'+o.m.cacheWrite1h+','+o.m.cacheWrite5m+')');
       } else {
         n(c+'5', o.m.input);
       }
@@ -682,69 +689,72 @@ function downloadExcel() {
     s('A15', 'CW Write (\u30EA\u30AF\u30A8\u30B9\u30C8\u66F8\u8FBC)');
     s('A16', 'Prompt (\u65B0\u898F\u5165\u529B)');
     s('A17', 'Output (\u51FA\u529B)');
+    s('A18', 'Reasoning (推論)');
     mods.forEach(function(o, i) {
       var c = cols[i];
       var isGemini = plat.name === 'Gemini';
       // Write = (C/1M) * WritePrice * WPD * Days * Scale
       if (isGemini) {
-        fm(c+'12', '('+P+'9/1000000)*'+c+'5*1');
+        fm(c+'12', '('+P+'10/1000000)*'+c+'5*1');
       } else {
-        fm(c+'12', '('+P+'9/1000000)*'+c+'5*'+c+'9*'+P+'12');
+        fm(c+'12', '('+P+'10/1000000)*'+c+'5*'+c+'9*'+P+'13');
       }
       // Storage = (C/1M) * StoragePrice * TotalHours (Geminiのみ実質発生、他はstorage=0)
-      fm(c+'13', '('+P+'9/1000000)*'+c+'8*'+P+'20');
+      fm(c+'13', '('+P+'10/1000000)*'+c+'8*'+P+'21');
       // Read = (CR/1M) * CachedInput * TotalReqs (Gemini uses C instead of CR)
       if (isGemini) {
-        fm(c+'14', '('+P+'9/1000000)*'+c+'6*'+P+'19');
+        fm(c+'14', '('+P+'10/1000000)*'+c+'6*'+P+'20');
       } else {
-        fm(c+'14', '('+P+'8/1000000)*'+c+'6*'+P+'19');
+        fm(c+'14', '('+P+'9/1000000)*'+c+'6*'+P+'20');
       }
       // CW Write = (CW/1M) * WritePrice * TotalReqs (0 for Gemini)
       if (isGemini) {
         n(c+'15', 0);
       } else {
-        fm(c+'15', '('+P+'7/1000000)*'+c+'5*'+P+'19');
+        fm(c+'15', '('+P+'8/1000000)*'+c+'5*'+P+'20');
       }
       // Prompt = (P/1M) * Input * TotalReqs
-      fm(c+'16', '('+P+'5/1000000)*'+c+'4*'+P+'19');
+      fm(c+'16', '('+P+'5/1000000)*'+c+'4*'+P+'20');
       // Output = (O/1M) * Output * TotalReqs
-      fm(c+'17', '('+P+'6/1000000)*'+c+'7*'+P+'19');
+      fm(c+'17', '('+P+'6/1000000)*'+c+'7*'+P+'20');
+      // Reasoning = (Rs/1M) * Output * TotalReqs (thinking/reasoning billed at output rate)
+      fm(c+'18', '('+P+'7/1000000)*'+c+'7*'+P+'20');
     });
 
-    // Row 19-22: Totals
-    s('A19', '\u3010\u5408\u8A08\u3011');
-    mods.forEach(function(o,i) { s(cols[i]+'19', o.m.name); });
-    s('A20', 'USD \u5408\u8A08');
-    s('A21', 'JPY \u5408\u8A08');
-    s('A22', '1\u30EA\u30AF\u30A8\u30B9\u30C8\u5358\u4FA1 (JPY)');
+    // Row 20-23: Totals
+    s('A20', '\u3010\u5408\u8A08\u3011');
+    mods.forEach(function(o,i) { s(cols[i]+'20', o.m.name); });
+    s('A21', 'USD \u5408\u8A08');
+    s('A22', 'JPY \u5408\u8A08');
+    s('A23', '1\u30EA\u30AF\u30A8\u30B9\u30C8\u5358\u4FA1 (JPY)');
     mods.forEach(function(o, i) {
       var c = cols[i];
-      fm(c+'20', 'SUM('+c+'12:'+c+'17)');
-      fm(c+'21', c+'20*'+P+'4');
-      fm(c+'22', 'IF('+P+'19>0,'+c+'21/'+P+'19,0)');
+      fm(c+'21', 'SUM('+c+'12:'+c+'18)');
+      fm(c+'22', c+'21*'+P+'4');
+      fm(c+'23', 'IF('+P+'20>0,'+c+'22/'+P+'20,0)');
     });
 
-    // Row 24-29: Cache effect
-    s('A24', '\u3010\u30AD\u30E3\u30C3\u30B7\u30E5\u52B9\u679C\u3011');
-    mods.forEach(function(o,i) { s(cols[i]+'24', o.m.name); });
-    s('A25', '\u30AD\u30E3\u30C3\u30B7\u30E5\u306A\u3057 (USD)');
-    s('A26', '\u30AD\u30E3\u30C3\u30B7\u30E5\u3042\u308A (USD)');
-    s('A27', '\u524A\u6E1B\u984D (USD)');
-    s('A28', '\u524A\u6E1B\u984D (JPY)');
-    s('A29', '\u524A\u6E1B\u7387');
+    // Row 25-30: Cache effect
+    s('A25', '\u3010\u30AD\u30E3\u30C3\u30B7\u30E5\u52B9\u679C\u3011');
+    mods.forEach(function(o,i) { s(cols[i]+'25', o.m.name); });
+    s('A26', '\u30AD\u30E3\u30C3\u30B7\u30E5\u306A\u3057 (USD)');
+    s('A27', '\u30AD\u30E3\u30C3\u30B7\u30E5\u3042\u308A (USD)');
+    s('A28', '\u524A\u6E1B\u984D (USD)');
+    s('A29', '\u524A\u6E1B\u984D (JPY)');
+    s('A30', '\u524A\u6E1B\u7387');
     mods.forEach(function(o, i) {
       var c = cols[i];
       var isGemini = plat.name === 'Gemini';
-      // No-cache = (CR + CW + P) / 1M * Input * TotalReqs + Output
+      // No-cache = (CR + CW + P) / 1M * Input * TotalReqs + Output + Reasoning
       if (isGemini) {
-        fm(c+'25', '(('+P+'9+'+P+'5)/1000000)*'+c+'4*'+P+'19+'+c+'17');
+        fm(c+'26', '(('+P+'10+'+P+'5)/1000000)*'+c+'4*'+P+'20+'+c+'17+'+c+'18');
       } else {
-        fm(c+'25', '(('+P+'8+'+P+'7+'+P+'5)/1000000)*'+c+'4*'+P+'19+'+c+'17');
+        fm(c+'26', '(('+P+'9+'+P+'8+'+P+'5)/1000000)*'+c+'4*'+P+'20+'+c+'17+'+c+'18');
       }
-      fm(c+'26', c+'20');
-      fm(c+'27', c+'25-'+c+'26');
-      fm(c+'28', c+'27*'+P+'4');
-      ws[c+'29'] = {t:'n', f:'IF('+c+'25>0,('+c+'25-'+c+'26)/'+c+'25,0)', z:'0.0%'};
+      fm(c+'27', c+'21');
+      fm(c+'28', c+'26-'+c+'27');
+      fm(c+'29', c+'28*'+P+'4');
+      ws[c+'30'] = {t:'n', f:'IF('+c+'26>0,('+c+'26-'+c+'27)/'+c+'26,0)', z:'0.0%'};
     });
 
     // Remarks
@@ -753,7 +763,8 @@ function downloadExcel() {
       plat.remarks.forEach(function(r, i) { s(remarkCol+(4+i), r); });
       s(remarkCol+'14', 'Read = CR \u00D7 CachedInput (Gemini\u306FC)');
       s(remarkCol+'15', 'CW: \u30EA\u30AF\u30A8\u30B9\u30C8\u6BCE\u306E\u30AD\u30E3\u30C3\u30B7\u30E5\u66F8\u8FBC (Gemini\u306F0)');
-      s(remarkCol+'25', '\u30AD\u30E3\u30C3\u30B7\u30E5\u672A\u4F7F\u7528: CR+CW+P\u3092Input\u4FA1\u683C\u3067\u8A08\u7B97');
+      s(remarkCol+'18', 'Reasoning: \u63A8\u8AD6/\u601D\u8003\u30C8\u30FC\u30AF\u30F3 \u00D7 Output\u5358\u4FA1');
+      s(remarkCol+'26', '\u30AD\u30E3\u30C3\u30B7\u30E5\u672A\u4F7F\u7528: CR+CW+P\u3092Input\u4FA1\u683C\u3067\u8A08\u7B97 + Output + Reasoning');
     }
 
     // Track for summary
@@ -762,7 +773,7 @@ function downloadExcel() {
     });
 
     // Sheet config
-    ws['!ref'] = 'A1:'+(remarkCol||cols[cols.length-1])+'29';
+    ws['!ref'] = 'A1:'+(remarkCol||cols[cols.length-1])+'30';
     var cw = [{wch:28},{wch:2}];
     mods.forEach(function() { cw.push({wch:18}); });
     if (remarkCol) cw.push({wch:36});
@@ -784,10 +795,10 @@ function downloadExcel() {
     var row = 4 + i;
     var sn = "'"+ref.sheet+"'!"+ref.col;
     ss_s('A'+row, ref.name);
-    ss_f('B'+row, sn+'20');
-    ss_f('C'+row, sn+'21');
-    ss_f('D'+row, sn+'22');
-    ss['E'+row] = {t:'n', f:sn+'29', z:'0.0%'};
+    ss_f('B'+row, sn+'21');
+    ss_f('C'+row, sn+'22');
+    ss_f('D'+row, sn+'23');
+    ss['E'+row] = {t:'n', f:sn+'30', z:'0.0%'};
   });
   ss['!ref'] = 'A1:E'+(3+summaryRefs.length);
   ss['!cols'] = [{wch:24},{wch:16},{wch:16},{wch:18},{wch:12}];
@@ -995,6 +1006,7 @@ function render() {
         [
           ['\u5165\u529B (Prompt)', 'prompt'],
           ['\u51FA\u529B (Output)', 'outputCost'],
+          ['\u63A8\u8AD6 (Reasoning)', 'reasoning'],
           ['CW \u66F8\u8FBC', 'cwWrite'],
           ['CR \u8AAD\u8FBC', 'read'],
           ['Storage', 'storageCost'],
@@ -1003,8 +1015,8 @@ function render() {
           let row = '<tr class="border-t border-slate-100"><td class="px-4 py-2 text-slate-500 font-sans">' + (i+1) + '. ' + label + '</td>' +
             results.map(r => {
               const v = r[k];
-              if ((k === 'storageCost' || k === 'cwWrite') && v === 0) return '<td class="px-4 py-2 text-slate-400">\u2014</td>';
-              return '<td class="px-4 py-2 ' + (k === 'storageCost' && v > 0 ? 'text-orange-600' : '') + '">&yen;' + fJ(v) + '</td>';
+              if ((k === 'storageCost' || k === 'cwWrite' || k === 'reasoning') && v === 0) return '<td class="px-4 py-2 text-slate-400">\u2014</td>';
+              return '<td class="px-4 py-2 ' + (k === 'storageCost' && v > 0 ? 'text-orange-600' : (k === 'reasoning' && v > 0 ? 'text-purple-600' : '')) + '">&yen;' + fJ(v) + '</td>';
             }).join('') + '</tr>';
           return row;
         }).join('') +
