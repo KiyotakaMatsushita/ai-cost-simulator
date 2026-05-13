@@ -164,19 +164,19 @@ const presets = [
     name: '\u5C0F\u898F\u6A21 PoC',
     promptTokens: 2000, outputTokens: 500, reasoningTokens: 0, cacheWriteTokens: 3000, cacheReadTokens: 8000, cacheTokens: 10000,
     userCount: 100, reqPerUser: 5, testDays: 14, hoursPerDay: 24,
-    claudeWriteType: '5m', cacheWritesPerDay: 0,
+    claudeWriteType: '5m', cacheWritesPerDay: 0, geminiEndpointType: 'global',
   },
   {
     name: '\u672C\u756A\u904B\u7528',
     promptTokens: 3000, outputTokens: 1000, reasoningTokens: 0, cacheWriteTokens: 5000, cacheReadTokens: 15000, cacheTokens: 20000,
     userCount: 1000, reqPerUser: 10, testDays: 30, hoursPerDay: 24,
-    claudeWriteType: '5m', cacheWritesPerDay: 0,
+    claudeWriteType: '5m', cacheWritesPerDay: 0, geminiEndpointType: 'global',
   },
   {
     name: '\u5927\u898F\u6A21\u5C55\u958B',
     promptTokens: 5000, outputTokens: 2000, reasoningTokens: 0, cacheWriteTokens: 10000, cacheReadTokens: 30000, cacheTokens: 40000,
     userCount: 10000, reqPerUser: 20, testDays: 30, hoursPerDay: 24,
-    claudeWriteType: '5m', cacheWritesPerDay: 0,
+    claudeWriteType: '5m', cacheWritesPerDay: 0, geminiEndpointType: 'global',
   },
 ];
 
@@ -202,7 +202,7 @@ const state = {
   sim: {
     promptTokens: 3000, outputTokens: 1000, reasoningTokens: 0, cacheWriteTokens: 5000, cacheReadTokens: 10000, cacheTokens: 15000,
     userCount: 1000, reqPerUser: 10, testDays: 7, hoursPerDay: 24,
-    claudeWriteType: '5m', cacheWritesPerDay: 0,
+    claudeWriteType: '5m', cacheWritesPerDay: 0, geminiEndpointType: 'global',
   },
   // Scenario tab
   activeScenario: 0,
@@ -270,6 +270,7 @@ function encodeState(full) {
       if (full || p[kv[1]] !== d[kv[1]]) parts.push(kv[0] + '=' + p[kv[1]]);
     });
     if (full || p.claudeWriteType !== d.claudeWriteType) parts.push('wt=' + p.claudeWriteType);
+    if (full || p.geminiEndpointType !== d.geminiEndpointType) parts.push('gep=' + p.geminiEndpointType);
   } else if (tab === 'memory') {
     const m = state.mem, d = defaultMem;
     memKeyMap.forEach(function(kv) {
@@ -319,6 +320,7 @@ function decodeState() {
       if (raw != null && raw !== '' && !isNaN(Number(raw))) p[kv[1]] = Number(raw);
     });
     if (params.wt === '5m' || params.wt === '1h') p.claudeWriteType = params.wt;
+    if (params.gep === 'global' || params.gep === 'nonglobal') p.geminiEndpointType = params.gep;
   } else if (state.activeTab === 'memory') {
     const m = state.mem;
     memKeyMap.forEach(function(kv) {
@@ -399,6 +401,25 @@ function getWpd(key, p) {
   return 1;
 }
 
+// Gemini Non-global endpoint は Global の +10% (2026-07-01 以降 発効)
+// 対象は GA Gemini 3.x 以降のみ。Gemini 2.5 Flash は対象外（公式footnote準拠）
+function adjustModelForEndpoint(m, p, key) {
+  if (p.geminiEndpointType !== 'nonglobal') return m;
+  if (!key.includes('gemini')) return m;
+  // Gemini 2.5 系は uniform pricing — Non-global premium 適用外
+  if (key === 'gemini25Flash') return m;
+  const mult = 1.10;
+  return {
+    ...m,
+    input: m.input * mult,
+    output: m.output * mult,
+    cachedInput: m.cachedInput * mult,
+    cacheWrite5m: m.cacheWrite5m * mult,
+    cacheWrite1h: m.cacheWrite1h * mult,
+    storage: m.storage * mult,
+  };
+}
+
 // モデルごとの共通プロパティを算出
 function modelProps(key, m, p) {
   const isClaude = key.includes('claude');
@@ -418,20 +439,21 @@ function computeResults(p) {
   const totalReqs = p.userCount * p.reqPerUser;
   const totalHours = p.hoursPerDay * p.testDays;
   const results = Object.entries(pricingData).map(([key, m]) => {
-    const mp = modelProps(key, m, p);
+    const mAdj = adjustModelForEndpoint(m, p, key);
+    const mp = modelProps(key, mAdj, p);
     // TTL切れ時のC再書込コスト (システムプロンプトは共通キャッシュ → scale=1)
     const ttlWr = mp.cM * mp.wp * mp.wpd * p.testDays;
     const cwCost = mp.cwM * mp.wp * totalReqs;
-    const st = mp.isGemini ? mp.cM * m.storage * totalHours : 0;
-    const rd = mp.crM * m.cachedInput * totalReqs;
-    const pr = mp.pM * m.input * totalReqs;
-    const ou = mp.oM * m.output * totalReqs;
-    const rs = mp.rsM * m.output * totalReqs;
+    const st = mp.isGemini ? mp.cM * mAdj.storage * totalHours : 0;
+    const rd = mp.crM * mAdj.cachedInput * totalReqs;
+    const pr = mp.pM * mAdj.input * totalReqs;
+    const ou = mp.oM * mAdj.output * totalReqs;
+    const rs = mp.rsM * mAdj.output * totalReqs;
     const tot = cwCost + st + rd + pr + ou + rs;
     const pReq = totalReqs > 0 ? tot / totalReqs : 0;
-    const noC = (mp.crM + mp.cwM + mp.pM) * m.input * totalReqs + ou + rs;
+    const noC = (mp.crM + mp.cwM + mp.pM) * mAdj.input * totalReqs + ou + rs;
     return {
-      ...m, id: key, isClaude: mp.isClaude, isOpenAI: mp.isOpenAI, isNova: mp.isNova, isGemini: mp.isGemini,
+      ...mAdj, id: key, isClaude: mp.isClaude, isOpenAI: mp.isOpenAI, isNova: mp.isNova, isGemini: mp.isGemini,
       writePrice: mp.wp, writesPerDay: mp.wpd, ttlWrite: ttlWr, cwWrite: cwCost, storageCost: st,
       read: rd, prompt: pr, outputCost: ou, reasoning: rs, total: tot, perReq: pReq, noCache: noC,
       savPct: noC > 0 ? (((noC - tot) / noC) * 100).toFixed(1) : '0.0', savUSD: noC - tot,
@@ -443,17 +465,18 @@ function computeResults(p) {
 function computeTimeSeries(p) {
   const dailyReqs = (p.userCount * p.reqPerUser) / p.testDays;
   return Object.entries(pricingData).map(([key, m]) => {
-    const mp = modelProps(key, m, p);
+    const mAdj = adjustModelForEndpoint(m, p, key);
+    const mp = modelProps(key, mAdj, p);
     const dCwWrite = mp.cwM * mp.wp * dailyReqs;
-    const dStorage = mp.isGemini ? mp.cM * m.storage * p.hoursPerDay : 0;
-    const dRead = mp.crM * m.cachedInput * dailyReqs;
-    const dPrompt = mp.pM * m.input * dailyReqs;
-    const dOutput = mp.oM * m.output * dailyReqs;
-    const dReasoning = mp.rsM * m.output * dailyReqs;
+    const dStorage = mp.isGemini ? mp.cM * mAdj.storage * p.hoursPerDay : 0;
+    const dRead = mp.crM * mAdj.cachedInput * dailyReqs;
+    const dPrompt = mp.pM * mAdj.input * dailyReqs;
+    const dOutput = mp.oM * mAdj.output * dailyReqs;
+    const dReasoning = mp.rsM * mAdj.output * dailyReqs;
     const daily = dCwWrite + dStorage + dRead + dPrompt + dOutput + dReasoning;
     const pts = [];
     for (let d = 0; d <= p.testDays; d++) pts.push({ day: d, usd: daily * d });
-    return { ...m, id: key, points: pts, daily, total: daily * p.testDays };
+    return { ...mAdj, id: key, points: pts, daily, total: daily * p.testDays };
   });
 }
 
@@ -662,12 +685,17 @@ function modelSettingsSection(prefix, p) {
   return '<div class="mt-4 space-y-2">' +
     '<p class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">\u30E2\u30C7\u30EB\u5225\u8A2D\u5B9A</p>' +
     // Gemini
-    '<div class="flex items-center gap-3 px-3 py-2 border border-slate-100 rounded-lg">' +
+    '<div class="flex flex-wrap items-center gap-3 px-3 py-2 border border-slate-100 rounded-lg">' +
       '<span class="text-xs font-semibold w-16" style="color:#4285F4">Gemini</span>' +
+      '<span class="text-xs text-slate-400">Endpoint:</span>' +
+      '<div class="flex gap-1">' +
+        '<button data-prefix="' + prefix + '" data-gep="global" class="px-2 py-0.5 text-[11px] rounded border ' + (p.geminiEndpointType === 'global' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">Global</button>' +
+        '<button data-prefix="' + prefix + '" data-gep="nonglobal" class="px-2 py-0.5 text-[11px] rounded border ' + (p.geminiEndpointType === 'nonglobal' ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-500') + '">Non-global</button>' +
+      '</div>' +
       '<span class="text-xs text-slate-400">\u4FDD\u6301\u6642\u9593:</span>' +
       '<input type="number" data-prefix="' + prefix + '" data-key="hoursPerDay" value="' + p.hoursPerDay + '" class="' + smallInput + '" />' +
       '<span class="text-xs text-slate-400">h/\u65E5' + (totalHours ? ' (\u8A08' + totalHours + 'h)' : '') + '</span>' +
-      '<span class="text-[10px] text-slate-300 ml-auto">\u6C38\u7D9A\u30AD\u30E3\u30C3\u30B7\u30E5\u30FB\u5171\u6709\u30FB Storage\u8AB2\u91D1\u3042\u308A</span>' +
+      '<span class="text-[10px] text-slate-300 ml-auto">' + (p.geminiEndpointType === 'nonglobal' ? 'Non-global: 3.x \u306E\u307F \u00D71.10 (2.5 Flash \u5BFE\u8C61\u5916\u30012026-07-01\u301C\u767A\u52B9)' : '\u6C38\u7D9A\u30AD\u30E3\u30C3\u30B7\u30E5\u30FB\u5171\u6709\u30FB Storage\u8AB2\u91D1\u3042\u308A') + '</span>' +
     '</div>' +
     // Claude
     '<div class="flex flex-wrap items-center gap-3 px-3 py-2 border border-slate-100 rounded-lg">' +
@@ -745,7 +773,8 @@ function downloadExcel() {
   var platforms = [
     { name: 'Gemini', keys: ['gemini25Flash','gemini30Flash','gemini31FlashLite','gemini31Pro'],
       useWriteFormula: false, wpd: function() { return 1; },
-      remarks: ['\u6C38\u7D9A\u30AD\u30E3\u30C3\u30B7\u30E5 \u2192 \u66F8\u8FBC1\u56DE/\u65E5', 'Storage\u8AB2\u91D1\u3042\u308A'] },
+      remarks: ['\u6C38\u7D9A\u30AD\u30E3\u30C3\u30B7\u30E5 \u2192 \u66F8\u8FBC1\u56DE/\u65E5', 'Storage\u8AB2\u91D1\u3042\u308A',
+        'Endpoint: ' + (p.geminiEndpointType === 'nonglobal' ? 'Non-global (3.x \u306E\u307F \u00D71.10\u30012.5 Flash \u636E\u7F6E)' : 'Global')] },
     { name: 'Claude', keys: ['claude45Haiku','claude46Sonnet','claude47Opus'],
       useWriteFormula: true, wpd: function() { return getWpd('claude', p); },
       remarks: ['TTL\u306B\u5FDC\u3058\u3066Write\u5358\u4FA1\u5207\u66FF', 'Sliding window: TTL\u5185\u30EA\u30AF\u30A8\u30B9\u30C8\u3067\u7DAD\u6301', 'Storage\u8AB2\u91D1\u306A\u3057'] },
@@ -783,15 +812,16 @@ function downloadExcel() {
     s('A9', '\u66F8\u8FBC\u56DE\u6570/\u65E5');
     mods.forEach(function(o, i) {
       var c = cols[i];
-      n(c+'4', o.m.input);
+      var mAdj = adjustModelForEndpoint(o.m, p, o.key);
+      n(c+'4', mAdj.input);
       if (plat.useWriteFormula) {
-        fm(c+'5', 'IF('+P+'15=1,'+o.m.cacheWrite1h+','+o.m.cacheWrite5m+')');
+        fm(c+'5', 'IF('+P+'15=1,'+mAdj.cacheWrite1h+','+mAdj.cacheWrite5m+')');
       } else {
-        n(c+'5', o.m.input);
+        n(c+'5', mAdj.input);
       }
-      n(c+'6', o.m.cachedInput);
-      n(c+'7', o.m.output);
-      n(c+'8', o.m.storage);
+      n(c+'6', mAdj.cachedInput);
+      n(c+'7', mAdj.output);
+      n(c+'8', mAdj.storage);
       n(c+'9', plat.wpd());
     });
 
@@ -1417,6 +1447,13 @@ function render() {
     el.addEventListener('click', () => {
       const target = el.dataset.prefix === 'sim' ? state.sim : state.scenarios[state.activeScenario];
       target.claudeWriteType = el.dataset.wrt;
+      render();
+    });
+  });
+  app.querySelectorAll('button[data-gep]').forEach(el => {
+    el.addEventListener('click', () => {
+      const target = el.dataset.prefix === 'sim' ? state.sim : state.scenarios[state.activeScenario];
+      target.geminiEndpointType = el.dataset.gep;
       render();
     });
   });
