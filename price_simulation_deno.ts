@@ -286,23 +286,22 @@ function getWpd(key, p) {
   return 1;
 }
 
-// Gemini Non-global endpoint は Global の +10% (2026-07-01 以降 発効)
-// 対象は GA Gemini 3.x 以降のみ。Gemini 2.5 Flash は対象外（公式footnote準拠）
+// Non-global endpoint 価格はモデル定義の nonGlobal フィールドを使用
+// (2026-07-01 以降 発効。公式表に Non-global 価格が明記されたモデルのみ差分あり)
 function adjustModelForEndpoint(m, p, key) {
   if (p.geminiEndpointType !== 'nonglobal') return m;
-  if (!key.includes('gemini')) return m;
-  // Gemini 2.5 系は uniform pricing — Non-global premium 適用外
-  if (key === 'gemini25Flash') return m;
-  const mult = 1.10;
-  return {
-    ...m,
-    input: m.input * mult,
-    output: m.output * mult,
-    cachedInput: m.cachedInput * mult,
-    cacheWrite5m: m.cacheWrite5m * mult,
-    cacheWrite1h: m.cacheWrite1h * mult,
-    storage: m.storage * mult,
-  };
+  if (!m.nonGlobal) return m;
+  return { ...m, ...m.nonGlobal };
+}
+
+// Long-context tier: 入力長 (prompt + cache) が threshold 超なら longContext 価格を適用
+// Vertex AI: Gemini 3/3.1 Pro は >200K で input/cachedInput 2倍、output 1.5倍
+function adjustModelForLongContext(m, p) {
+  if (!m.longContext) return m;
+  const inputLen = (p.promptTokens || 0) + (p.cacheTokens || 0);
+  if (inputLen <= m.longContext.threshold) return m;
+  const { threshold, ...over } = m.longContext;
+  return { ...m, ...over };
 }
 
 // モデルごとの共通プロパティを算出
@@ -324,7 +323,7 @@ function computeResults(p) {
   const totalReqs = p.userCount * p.reqPerUser;
   const totalHours = p.hoursPerDay * p.testDays;
   const results = Object.entries(pricingData).map(([key, m]) => {
-    const mAdj = adjustModelForEndpoint(m, p, key);
+    const mAdj = adjustModelForLongContext(adjustModelForEndpoint(m, p, key), p);
     const mp = modelProps(key, mAdj, p);
     // TTL切れ時のC再書込コスト (システムプロンプトは共通キャッシュ → scale=1)
     const ttlWr = mp.cM * mp.wp * mp.wpd * p.testDays;
@@ -350,7 +349,7 @@ function computeResults(p) {
 function computeTimeSeries(p) {
   const dailyReqs = (p.userCount * p.reqPerUser) / p.testDays;
   return Object.entries(pricingData).map(([key, m]) => {
-    const mAdj = adjustModelForEndpoint(m, p, key);
+    const mAdj = adjustModelForLongContext(adjustModelForEndpoint(m, p, key), p);
     const mp = modelProps(key, mAdj, p);
     const dCwWrite = mp.cwM * mp.wp * dailyReqs;
     const dStorage = mp.isGemini ? mp.cM * mAdj.storage * p.hoursPerDay : 0;
@@ -580,7 +579,7 @@ function modelSettingsSection(prefix, p) {
       '<span class="text-xs text-slate-400">\u4FDD\u6301\u6642\u9593:</span>' +
       '<input type="number" data-prefix="' + prefix + '" data-key="hoursPerDay" value="' + p.hoursPerDay + '" class="' + smallInput + '" />' +
       '<span class="text-xs text-slate-400">h/\u65E5' + (totalHours ? ' (\u8A08' + totalHours + 'h)' : '') + '</span>' +
-      '<span class="text-[10px] text-slate-300 ml-auto">' + (p.geminiEndpointType === 'nonglobal' ? 'Non-global: 3.x \u306E\u307F \u00D71.10 (2.5 Flash \u5BFE\u8C61\u5916\u30012026-07-01\u301C\u767A\u52B9)' : '\u6C38\u7D9A\u30AD\u30E3\u30C3\u30B7\u30E5\u30FB\u5171\u6709\u30FB Storage\u8AB2\u91D1\u3042\u308A') + '</span>' +
+      '<span class="text-[10px] text-slate-300 ml-auto">' + ((p.promptTokens + p.cacheTokens) > 200000 ? 'Long-context: Pro \u30E2\u30C7\u30EB\u306F >200K \u3067 input/cached \u00D72\u3001output \u00D71.5 \u81EA\u52D5\u9069\u7528' : (p.geminiEndpointType === 'nonglobal' ? 'Non-global: 3.1 Flash-Lite \u306E\u307F\u5225\u4FA1\u683C (2026-07-01\u301C\u767A\u52B9\u3001\u4ED6\u306F Global \u540C\u984D)' : '\u6C38\u7D9A\u30AD\u30E3\u30C3\u30B7\u30E5\u30FB\u5171\u6709\u30FB Storage\u8AB2\u91D1\u3042\u308A')) + '</span>' +
     '</div>' +
     // Claude
     '<div class="flex flex-wrap items-center gap-3 px-3 py-2 border border-slate-100 rounded-lg">' +
@@ -659,7 +658,8 @@ function downloadExcel() {
     { name: 'Gemini', keys: ['gemini25Flash','gemini30Flash','gemini31FlashLite','gemini31Pro'],
       useWriteFormula: false, wpd: function() { return 1; },
       remarks: ['\u6C38\u7D9A\u30AD\u30E3\u30C3\u30B7\u30E5 \u2192 \u66F8\u8FBC1\u56DE/\u65E5', 'Storage\u8AB2\u91D1\u3042\u308A',
-        'Endpoint: ' + (p.geminiEndpointType === 'nonglobal' ? 'Non-global (3.x \u306E\u307F \u00D71.10\u30012.5 Flash \u636E\u7F6E)' : 'Global')] },
+        'Endpoint: ' + (p.geminiEndpointType === 'nonglobal' ? 'Non-global (3.1 Flash-Lite \u306E\u307F\u5225\u4FA1\u683C\u3001\u4ED6\u30E2\u30C7\u30EB\u306F Global \u540C\u984D)' : 'Global'),
+        'Long-context: ' + ((p.promptTokens + p.cacheTokens) > 200000 ? '>200K \u9069\u7528\u4E2D (Pro: input/cached \u00D72\u3001output \u00D71.5)' : '\u2264200K (\u6A19\u6E96)')] },
     { name: 'Claude', keys: ['claude45Haiku','claude46Sonnet','claude47Opus'],
       useWriteFormula: true, wpd: function() { return getWpd('claude', p); },
       remarks: ['TTL\u306B\u5FDC\u3058\u3066Write\u5358\u4FA1\u5207\u66FF', 'Sliding window: TTL\u5185\u30EA\u30AF\u30A8\u30B9\u30C8\u3067\u7DAD\u6301', 'Storage\u8AB2\u91D1\u306A\u3057'] },

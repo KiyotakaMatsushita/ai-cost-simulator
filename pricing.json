@@ -30,6 +30,14 @@
     "cachedInput": 0.025,
     "output": 1.50,
     "storage": 1.00,
+    "nonGlobal": {
+      "input": 0.275,
+      "cacheWrite5m": 0.275,
+      "cacheWrite1h": 0.275,
+      "cachedInput": 0.0275,
+      "output": 1.65,
+      "storage": 1.00
+    },
     "color": "#FBBC04"
   },
   "gemini31Pro": {
@@ -41,6 +49,14 @@
     "cachedInput": 0.20,
     "output": 12.00,
     "storage": 4.50,
+    "longContext": {
+      "threshold": 200000,
+      "input": 4.00,
+      "cacheWrite5m": 4.00,
+      "cacheWrite1h": 4.00,
+      "cachedInput": 0.40,
+      "output": 18.00
+    },
     "color": "#EA4335"
   },
   "claude45Haiku": {
